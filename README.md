@@ -1,9 +1,9 @@
-# Iudex
+# Iudex Web
 
-Next generation observability.
+Next generation observability. For Node compatible Iudex, use [iudex-node](https://github.com/iudexai/iudex-node-module#readme).
 
 ### Table of contents
-- [Iudex](#iudex)
+- [Iudex Web](#iudex-web)
     - [Table of contents](#table-of-contents)
 - [Getting Started](#getting-started)
     - [Autoinstrument](#autoinstrument)
@@ -30,7 +30,7 @@ Instrumenting your code with Iudex just takes a few steps.
 
 1. Install dependencies.
 ```bash
-npm install iudex
+npm install iudex-web
 ```
 2. Follow the below instructions for your frameworks or use autoinstrumentation.
 3. Make sure your app has access to the environment variable `IUDEX_API_KEY`. You can manually add this to `instrument` as well if you use something like a secrets manager.
@@ -48,7 +48,7 @@ npm install iudex
 
 Add this code to the top your entrypoint file (likely `index.ts`).
 ```typescript
-import { instrument } from 'iudex';
+import { instrument } from 'iudex-web';
 instrument({
   serviceName: <your_service_name>, // highly encouraged
   env: <your_environment>, // optional
@@ -65,7 +65,7 @@ For libraries that are not autoinstrumented or if your project uses `"type": "mo
 Cloudflare workers operate differently than the browser environment due to how the environment is loaded and what global objects are available. Wrap your export handler object with `trace` to trace all ExportHandler functions.
 
 ```typescript
-import { iudexCloudflare } from 'iudex';
+import { iudexCloudflare } from 'iudex-web';
 const { trace, withTracing } = iudexCloudflare;
 import { ExportedHandler } from '@cloudflare/workers-types';
 
@@ -79,7 +79,7 @@ export default trace({
 If you only want to trace specific ExportHandler functions, you can wrap the specific functions with `withTracing`.
 
 ```typescript
-import { iudexCloudflare } from 'iudex';
+import { iudexCloudflare } from 'iudex-web';
 const { trace, withTracing } = iudexCloudflare;
 import { ExportedHandler, ExportedHandlerFetchHandler } from '@cloudflare/workers-types';
 
@@ -94,7 +94,7 @@ export default {
 Add this code snippet to the top your entry point file (likely `index.ts`). Skip this step if you already call `instrument` on your server.
 
 ```typescript
-import { instrument, iudexFastify } from 'iudex';
+import { instrument, iudexFastify } from 'iudex-web';
 instrument({
   serviceName: <your_service_name>,
 });
@@ -111,7 +111,7 @@ will create a log line with the `userId` attribute set to `123`.
 Use `emitOtelLog` to send logs to `iudex`. You have have called `instrument` somewhere before `emitOtelLog`.
 
 ```typescript
-import { emitOtelLog } from 'iudex';
+import { emitOtelLog } from 'iudex-web';
 
 /**
  * Custom logger example
