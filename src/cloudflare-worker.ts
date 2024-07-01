@@ -1,0 +1,83 @@
+
+import type {
+  ExportedHandler,
+  ExportedHandlerFetchHandler,
+  ExportedHandlerTailHandler,
+  ExportedHandlerTraceHandler,
+  ExportedHandlerScheduledHandler,
+  ExportedHandlerTestHandler,
+  EmailExportedHandler,
+  ExportedHandlerQueueHandler,
+  ExecutionContext,
+} from '@cloudflare/workers-types/index.ts';
+import _ from 'lodash';
+import { XMLHttpRequest, config as utilConfig } from './utils.js';
+import { TraceCtx, withTracing as baseWithTracing } from './trace.js';
+import { InstrumentConfig, instrument } from './instrument.js';
+
+type Handler<Env, QueueHandlerMessage, CfHostMetadata> = NonNullable<
+  | ExportedHandlerFetchHandler<Env, CfHostMetadata>
+  | ExportedHandlerTailHandler<Env>
+  | ExportedHandlerTraceHandler<Env>
+  | ExportedHandlerScheduledHandler<Env>
+  | ExportedHandlerTestHandler<Env>
+  | EmailExportedHandler<Env>
+  | ExportedHandlerQueueHandler<Env, QueueHandlerMessage>
+>;
+
+export const workersConfigSettings = { instrumentWindow: false, instrumentXhr: false };
+
+export function withTracing<
+  Env extends { IUDEX_API_KEY?: string } = { IUDEX_API_KEY?: string },
+  QueueHandlerMessage = unknown,
+  CfHostMetadata = unknown,
+  T extends Handler<Env, QueueHandlerMessage, CfHostMetadata>
+  = Handler<Env, QueueHandlerMessage, CfHostMetadata>,
+>(
+  fn: T,
+  ctx: TraceCtx<T> = {},
+  config: InstrumentConfig = {},
+): T {
+  // Polyfill XMLHttpRequest for workers
+  if (!globalThis.XMLHttpRequest) (globalThis as any).XMLHttpRequest = XMLHttpRequest;
+
+  if (!ctx.beforeRun) ctx.beforeRun = (arg1: any, env: Env, ctx: ExecutionContext) => {
+    /*
+      Otel uses XMLHttpRequest which doesnt exist in workers.
+      Its polyfilled with fetch. But since fetch uses promises
+      we manually add the fetch promise to the service worker settle queue.
+    */
+    utilConfig.workerEvent = ctx;
+
+    // Set window and XHR instrumentations to false for workers
+    if (config.settings == null) config.settings = workersConfigSettings;
+    if (config.settings.instrumentWindow == null) config.settings.instrumentWindow = false;
+    if (config.settings.instrumentXhr == null) config.settings.instrumentXhr = false;
+    if (config.iudexApiKey == null) config.iudexApiKey = env.IUDEX_API_KEY;
+
+    instrument(config);
+  };
+
+  return baseWithTracing(fn, ctx) as T;
+}
+
+export function trace<
+  Env extends { IUDEX_API_KEY: string } = { IUDEX_API_KEY: string },
+  QueueHandlerMessage = unknown,
+  CfHostMetadata = unknown,
+  EH extends ExportedHandler<Env, QueueHandlerMessage, CfHostMetadata>
+  = ExportedHandler<Env, QueueHandlerMessage, CfHostMetadata>,
+>(exportedHandler: EH, ctx: TraceCtx & { name: string }, config: InstrumentConfig = {}): EH {
+  return _.mapValues(exportedHandler, (handler, key) => {
+    if (!handler) return;
+    return withTracing<
+      Env,
+      QueueHandlerMessage,
+      CfHostMetadata
+    >(
+      handler as Handler<Env, QueueHandlerMessage, CfHostMetadata>,
+      { ...ctx, name: `${ctx.name}.${key}` },
+      config,
+    );
+  }) as EH;
+}
