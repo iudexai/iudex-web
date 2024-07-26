@@ -1,6 +1,6 @@
 {
   "name": "iudex-web",
-  "version": "0.1.12",
+  "version": "0.2.0",
   "description": "Iudex web client",
   "scripts": {
     "build": "tsup && tsc --declaration --emitDeclarationOnly",
@@ -71,6 +71,7 @@
     "@traceloop/instrumentation-openai": "^0.8.8",
     "@traceloop/instrumentation-pinecone": "^0.8.8",
     "@traceloop/instrumentation-vertexai": "^0.8.8",
+    "@vercel/otel": "^1.9.1",
     "lodash": "^4.17.21",
     "ramda": "^0.30.1"
   }

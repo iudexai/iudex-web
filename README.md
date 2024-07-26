@@ -1,11 +1,12 @@
-# Iudex Web
+# IUDEX Web
 
-Next generation observability. For Node compatible Iudex, use [iudex-node](https://github.com/iudexai/iudex-node-module#readme).
+Next generation observability. For Node compatible IUDEX, use [iudex-node](https://github.com/iudexai/iudex-node-module#readme).
 
 ### Table of contents
-- [Iudex Web](#iudex-web)
+- [IUDEX Web](#iudex-web)
     - [Table of contents](#table-of-contents)
 - [Getting Started](#getting-started)
+    - [NextJS](#nextjs)
     - [Autoinstrument](#autoinstrument)
     - [Cloudflare Workers](#cloudflare-workers)
     - [Console](#console)
@@ -26,7 +27,7 @@ Next generation observability. For Node compatible Iudex, use [iudex-node](https
 
 
 # Getting Started
-Instrumenting your code with Iudex just takes a few steps.
+Instrumenting your code with IUDEX just takes a few steps.
 
 1. Install dependencies.
 ```bash
@@ -36,6 +37,28 @@ npm install iudex-web
 3. Make sure your app has access to the environment variable `IUDEX_API_KEY`. You can manually add this to `instrument` as well if you use something like a secrets manager.
 4. You should be all set! Go to [https://app.iudex.ai/](https://app.iudex.ai/) and enter your API key.
 5. Go to [https://app.iudex.ai/logs](https://app.iudex.ai/logs) and press `Search` to view your logs.
+
+
+### NextJS
+We will follow the first half of [NextJS's OpenTelemetry Guide](https://nextjs.org/docs/app/building-your-application/optimizing/open-telemetry) then make a few changes to introduce IUDEX features and pipe the telemetry to the IUDEX backend which then can be viewed at [https://app.iudex.ai/services](https://app.iudex.ai/services).
+
+1. Add `experimental.instrumentationHook = true`; in your `next.config.js`
+2. Install vercel otel and iudex-web `npm install @vercel/otel iudex-web`
+3. Create a file `instrumentation.ts` in your project source root (or `src` if you're using one).
+4. Add this to `instrumentaiton.ts`
+```typescript
+import { registerOTel } from '@vercel/otel';
+import { registerOTelOptions } from 'iudex-web';
+
+export function register() {
+  const options = registerOTelOptions({
+    serviceName: <name_of_your_nextjs_app>,
+    publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here>
+  });
+  registerOTel(options);
+}
+```
+5. Go to [https://app.iudex.ai/services](https://app.iudex.ai/services) to view your NextJS traces.
 
 
 ### Autoinstrument
@@ -54,7 +77,7 @@ instrument({
   env: <your_environment>, // optional
 });
 ```
-You should be all set! Iudex will now record logs and trace the entire life cycle for each request.
+You should be all set! IUDEX will now record logs and trace the entire life cycle for each request.
 
 Go to [https://app.iudex.ai/](https://app.iudex.ai/) to start viewing your logs and traces!
 
@@ -152,7 +175,7 @@ console.log('Hello from Slack!', { ctx: { 'iudex.slack_channel_id': 'YOUR_SLACK_
 ```
 Your channel ID can be found by clicking the name of the channel in the top left, then at the bottom of the dialog that pops up.
 
-As long as the channel is public or you've invited the Iudex app, logs will be sent as messages to their tagged channel any time they are logged.
+As long as the channel is public or you've invited the IUDEX app, logs will be sent as messages to their tagged channel any time they are logged.
 
 
 # API reference

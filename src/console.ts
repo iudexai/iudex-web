@@ -5,13 +5,15 @@ import { emitOtelLog } from './utils.js';
 
 
 export function instrumentConsole() {
+  if ((console as any)._instrumented) return;
+
   const { log, error, warn, info, debug, timeLog, timeEnd } = console;
   ([
     { name: 'log', logger: log, level: 'INFO' },
     { name: 'error', logger: error, level: 'ERROR' },
     { name: 'warn', logger: warn, level: 'WARN' },
     { name: 'info', logger: info, level: 'INFO' },
-    { name: 'debug', logger: debug, level: 'DEBUG'},
+    { name: 'debug', logger: debug, level: 'DEBUG' },
     { name: 'timeLog', logger: timeLog, level: 'INFO' },
     { name: 'timeEnd', logger: timeEnd, level: 'INFO' },
   ] as const).forEach(({ name, logger, level }) => {
@@ -32,7 +34,7 @@ export function instrumentConsole() {
         }),
       );
 
-      // Pretty print pobjects
+      // Pretty print objects
       const prettyContentWoCtx = contentWoCtx.map((c) => {
         if (typeof c === 'object') {
           try {
@@ -46,6 +48,8 @@ export function instrumentConsole() {
       emitOtelLog({ level, body: prettyContentWoCtx.join(' '), attributes: contentCtx });
     };
   });
+
+  (console as any)._instrumented = true;
 }
 
 function isObject(obj: any): obj is Record<string, any> {

@@ -33,16 +33,21 @@ var src_exports = {};
 __export(src_exports, {
   Dispatch: () => Dispatch,
   XMLHttpRequest: () => XMLHttpRequest,
+  buildHeaders: () => buildHeaders,
+  buildResource: () => buildResource,
   config: () => config,
   convertSeverityTextToNumber: () => convertSeverityTextToNumber,
   convertSeverityValuesToLevel: () => convertSeverityValuesToLevel,
+  defaultInstrumentConfig: () => defaultInstrumentConfig,
   emitOtelLog: () => emitOtelLog,
   flattenObject: () => flattenObject,
   getCallerInfo: () => getCallerInfo,
   instrument: () => instrument,
   iudexCloudflare: () => cloudflare_worker_exports,
   iudexConsole: () => console_exports,
+  lazyObj: () => lazyObj,
   nativeConsole: () => nativeConsole,
+  registerOTelOptions: () => registerOTelOptions,
   trackAttribute: () => trackAttribute,
   useTracing: () => useTracing,
   withTracing: () => withTracing
@@ -398,6 +403,7 @@ __export(console_exports, {
 var R = __toESM(require("ramda"));
 var import_util = __toESM(require("util"));
 function instrumentConsole() {
+  if (console._instrumented) return;
   const { log, error, warn, info, debug, timeLog, timeEnd } = console;
   [
     { name: "log", logger: log, level: "INFO" },
@@ -430,6 +436,7 @@ function instrumentConsole() {
       emitOtelLog({ level, body: prettyContentWoCtx.join(" "), attributes: contentCtx });
     };
   });
+  console._instrumented = true;
 }
 __name(instrumentConsole, "instrumentConsole");
 function isObject(obj) {
@@ -438,57 +445,57 @@ function isObject(obj) {
 __name(isObject, "isObject");
 
 // src/instrument.ts
-function instrument({
-  baseUrl = process.env.IUDEX_EXPORTER_OTLP_ENDPOINT || process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "https://api.iudex.ai",
-  iudexApiKey = process.env.IUDEX_API_KEY,
-  serviceName = process.env.OTEL_SERVICE_NAME || "unknown-service",
-  instanceId,
-  gitCommit = process.env.GIT_COMMIT,
-  githubUrl = process.env.GITHUB_URL,
-  env = process.env.NODE_ENV,
-  headers: configHeaders = {},
-  settings = {}
-} = {}) {
+function defaultInstrumentConfig() {
+  return {
+    baseUrl: process.env.IUDEX_EXPORTER_OTLP_ENDPOINT || process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "https://api.iudex.ai",
+    iudexApiKey: process.env.IUDEX_API_KEY,
+    publicWriteOnlyIudexApiKey: process.env.PUBLIC_WRITE_ONLY_IUDEX_API_KEY || process.env.NEXT_PUBLIC_WRITE_ONLY_IUDEX_API_KEY,
+    serviceName: process.env.OTEL_SERVICE_NAME || "unknown-service",
+    gitCommit: process.env.GIT_COMMIT,
+    githubUrl: process.env.GITHUB_URL,
+    env: process.env.NODE_ENV,
+    headers: {},
+    settings: {}
+  };
+}
+__name(defaultInstrumentConfig, "defaultInstrumentConfig");
+function instrument(instrumentConfig = {}) {
   if (config.isInstrumented) return;
-  if (!iudexApiKey) {
+  const {
+    baseUrl,
+    iudexApiKey,
+    publicWriteOnlyIudexApiKey,
+    serviceName,
+    instanceId,
+    gitCommit,
+    githubUrl,
+    env,
+    headers: configHeaders,
+    settings
+  } = { ...defaultInstrumentConfig(), ...instrumentConfig };
+  if (!publicWriteOnlyIudexApiKey && !iudexApiKey) {
     console.warn(
-      `The IUDEX_API_KEY environment variable is missing or empty. Provide IUDEX_API_KEY to the environment on load OR instrument with the iudexApiKey option. Example: \`instrument{ iudexApiKey: 'My_API_Key' })\``
+      `The PUBLIC_WRITE_ONLY_IUDEX_API_KEY environment variable is missing or empty. Provide PUBLIC_WRITE_ONLY_IUDEX_API_KEY to the environment on load OR instrument with the publicWriteOnlyIudexApiKey option. Example: \`instrument{ publicWriteOnlyIudexApiKey: 'My_API_Key' })\``
     );
     return;
   }
-  const headers = {
-    "x-api-key": iudexApiKey,
-    ...configHeaders
-  };
-  if (!gitCommit) {
-    try {
-      const { execSync } = require("child_process");
-      gitCommit = execSync("git rev-parse HEAD").toString().trim();
-    } catch (e) {
-    }
-  }
-  const resource = new import_resources.Resource(import_lodash2.default.omitBy({
-    [import_semantic_conventions2.SEMRESATTRS_SERVICE_NAME]: serviceName,
-    [import_semantic_conventions2.SEMRESATTRS_SERVICE_INSTANCE_ID]: instanceId,
-    "git.commit": gitCommit,
-    "github.url": githubUrl,
-    "env": env
-  }, import_lodash2.default.isNil));
+  const headers = buildHeaders({ iudexApiKey, publicWriteOnlyIudexApiKey, headers: configHeaders });
+  const resource = buildResource({ serviceName, instanceId, gitCommit, githubUrl, env });
   const logExporter = new import_exporter_logs_otlp_proto.OTLPLogExporter({ url: baseUrl + "/v1/logs", headers });
   const logRecordProcessor = new import_sdk_logs.SimpleLogRecordProcessor(logExporter);
   const loggerProvider = new import_sdk_logs.LoggerProvider({ resource });
   loggerProvider.addLogRecordProcessor(logRecordProcessor);
   import_api_logs2.logs.setGlobalLoggerProvider(loggerProvider);
   const traceExporter = new import_exporter_trace_otlp_http.OTLPTraceExporter({ url: baseUrl + "/v1/traces", headers });
-  const spanProcessors = [new import_sdk_trace_base.SimpleSpanProcessor(traceExporter)];
+  const spanProcessor = new import_sdk_trace_base.SimpleSpanProcessor(traceExporter);
   const provider = new import_sdk_trace_web.WebTracerProvider();
-  provider.addSpanProcessor(spanProcessors[0]);
+  provider.addSpanProcessor(spanProcessor);
   provider.register({
     contextManager: new import_context_zone.ZoneContextManager(),
     propagator: new import_propagator_b3.B3Propagator()
   });
   const instrumentationConfigMap = {};
-  if (!settings.instrumentWindow || settings.instrumentConsole != void 0) {
+  if (!settings.instrumentWindow || settings.instrumentWindow != void 0) {
     instrumentationConfigMap["@opentelemetry/instrumentation-user-interaction"] = { enabled: false };
     instrumentationConfigMap["@opentelemetry/instrumentation-document-load"] = { enabled: false };
   }
@@ -502,9 +509,91 @@ function instrument({
     instrumentConsole();
   }
   config.isInstrumented = true;
-  return;
 }
 __name(instrument, "instrument");
+function buildHeaders(instrumentConfig) {
+  const {
+    iudexApiKey,
+    publicWriteOnlyIudexApiKey,
+    headers: configHeaders
+  } = { ...defaultInstrumentConfig, ...instrumentConfig };
+  const headers = { ...configHeaders };
+  if (publicWriteOnlyIudexApiKey) {
+    headers["x-write-only-api-key"] = publicWriteOnlyIudexApiKey;
+  }
+  if (iudexApiKey) {
+    headers["x-api-key"] = iudexApiKey;
+  }
+  return headers;
+}
+__name(buildHeaders, "buildHeaders");
+function buildResource(instrumentConfig) {
+  const {
+    serviceName,
+    instanceId,
+    gitCommit,
+    githubUrl,
+    env
+  } = { ...defaultInstrumentConfig, ...instrumentConfig };
+  return new import_resources.Resource(import_lodash2.default.omitBy({
+    [import_semantic_conventions2.SEMRESATTRS_SERVICE_NAME]: serviceName,
+    [import_semantic_conventions2.SEMRESATTRS_SERVICE_INSTANCE_ID]: instanceId,
+    "git.commit": gitCommit,
+    "github.url": githubUrl,
+    "env": env
+  }, import_lodash2.default.isNil));
+}
+__name(buildResource, "buildResource");
+function lazyObj(instantiator) {
+  let inst;
+  return new Proxy({}, {
+    get(target, prop, reciever) {
+      if (inst == void 0) {
+        inst = instantiator();
+      }
+      reciever.get = (target2, prop2) => target2[prop2];
+      return inst[prop];
+    }
+  });
+}
+__name(lazyObj, "lazyObj");
+
+// src/vercel.ts
+var import_exporter_logs_otlp_proto2 = require("@opentelemetry/exporter-logs-otlp-proto");
+var import_sdk_logs2 = require("@opentelemetry/sdk-logs");
+var import_exporter_trace_otlp_http2 = require("@opentelemetry/exporter-trace-otlp-http");
+var import_sdk_trace_base2 = require("@opentelemetry/sdk-trace-base");
+function registerOTelOptions(optionsOrServiceName) {
+  const options = typeof optionsOrServiceName === "string" ? { serviceName: optionsOrServiceName } : optionsOrServiceName || {};
+  const {
+    baseUrl,
+    iudexApiKey,
+    publicWriteOnlyIudexApiKey,
+    headers: configHeaders
+  } = { ...defaultInstrumentConfig, ...options };
+  const headers = buildHeaders({ iudexApiKey, publicWriteOnlyIudexApiKey, headers: configHeaders });
+  const logExporter = new import_exporter_logs_otlp_proto2.OTLPLogExporter({ url: baseUrl + "/v1/logs", headers });
+  const logRecordProcessor = new import_sdk_logs2.SimpleLogRecordProcessor(logExporter);
+  const traceExporter = new import_exporter_trace_otlp_http2.OTLPTraceExporter({ url: baseUrl + "/v1/traces", headers });
+  const spanProcessor = new import_sdk_trace_base2.SimpleSpanProcessor(traceExporter);
+  const resource = buildResource(options);
+  options.attributes = resource.attributes;
+  if (!options.logRecordProcessor) {
+    options.logRecordProcessor = logRecordProcessor;
+  }
+  if (!options.spanProcessors) {
+    options.spanProcessors = [spanProcessor];
+  } else {
+    options.spanProcessors.push(spanProcessor);
+  }
+  const settings = options.settings || {};
+  if (settings.instrumentConsole || settings.instrumentConsole == void 0) {
+    instrumentConsole();
+  }
+  config.isInstrumented = true;
+  return options;
+}
+__name(registerOTelOptions, "registerOTelOptions");
 
 // src/cloudflare-worker.ts
 var cloudflare_worker_exports = {};
@@ -550,16 +639,21 @@ __name(trackAttribute, "trackAttribute");
 0 && (module.exports = {
   Dispatch,
   XMLHttpRequest,
+  buildHeaders,
+  buildResource,
   config,
   convertSeverityTextToNumber,
   convertSeverityValuesToLevel,
+  defaultInstrumentConfig,
   emitOtelLog,
   flattenObject,
   getCallerInfo,
   instrument,
   iudexCloudflare,
   iudexConsole,
+  lazyObj,
   nativeConsole,
+  registerOTelOptions,
   trackAttribute,
   useTracing,
   withTracing
