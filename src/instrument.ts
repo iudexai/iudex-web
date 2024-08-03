@@ -1,9 +1,10 @@
 
 import {
+  BatchSpanProcessor,
+  ConsoleSpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import {
-  LoggerProvider,
   SimpleLogRecordProcessor,
 } from '@opentelemetry/sdk-logs';
 import { Resource } from '@opentelemetry/resources';
@@ -12,12 +13,11 @@ import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { WebTracerProvider } from '@opentelemetry/sdk-trace-web';
 import { ZoneContextManager } from '@opentelemetry/context-zone';
-import { registerInstrumentations } from '@opentelemetry/instrumentation';
+import { Instrumentation, registerInstrumentations } from '@opentelemetry/instrumentation';
 import {
   InstrumentationConfigMap,
   getWebAutoInstrumentations,
 } from '@opentelemetry/auto-instrumentations-web';
-import { B3Propagator } from '@opentelemetry/propagator-b3';
 import {
   SEMRESATTRS_SERVICE_INSTANCE_ID,
   SEMRESATTRS_SERVICE_NAME,
@@ -25,7 +25,11 @@ import {
 import _ from 'lodash';
 
 import { config } from './utils.js';
-import { instrumentConsole } from './console.js';
+import { instrumentConsole } from './instrumentations/console-instrumentation.js';
+import { LoggerProvider } from './opentelemetry/logger-provider.js';
+import {
+  UserInteractionInstrumentation,
+} from './instrumentations/user-interaction-instrumentation.js';
 
 
 export type InstrumentConfig = {
@@ -38,14 +42,26 @@ export type InstrumentConfig = {
   githubUrl?: string;
   env?: string;
   headers?: Record<string, string>;
-  settings?: Partial<{
-    instrumentConsole: boolean,
-    instrumentWindow: boolean,
-    instrumentXhr: boolean,
-  }>;
+  settings?: {
+    instrumentConsole?: boolean,
+    instrumentWindow?: boolean,
+    instrumentXhr?: boolean,
+    instrumentFetch?: boolean,
+    emitToConsole?: boolean,
+  };
+  otelConfig?: InstrumentationConfigMap;
 };
 
+
 export function defaultInstrumentConfig() {
+  if (typeof process === 'undefined') {
+    (global as any).process = { env: {} };
+  }
+
+  if (typeof process.env === 'undefined') {
+    (global as any).process.env = {};
+  }
+
   return {
     baseUrl: process.env.IUDEX_EXPORTER_OTLP_ENDPOINT
     || process.env.OTEL_EXPORTER_OTLP_ENDPOINT
@@ -59,6 +75,7 @@ export function defaultInstrumentConfig() {
     env: process.env.NODE_ENV,
     headers: {},
     settings: {},
+    otelConfig: {},
   } satisfies InstrumentConfig;
 }
 
@@ -76,8 +93,8 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
     env,
     headers: configHeaders,
     settings,
+    otelConfig,
   }: InstrumentConfig = { ...defaultInstrumentConfig(), ...instrumentConfig };
-
   if (!publicWriteOnlyIudexApiKey && !iudexApiKey) {
     console.warn(
       `The PUBLIC_WRITE_ONLY_IUDEX_API_KEY environment variable is missing or empty.` +
@@ -88,26 +105,32 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
     return;
   }
 
+  let url: any = baseUrl;
+  if (url == null || url === 'undefined' || url === 'null') {
+    url = 'https://api.iudex.ai';
+  }
+
   const headers = buildHeaders({ iudexApiKey, publicWriteOnlyIudexApiKey, headers: configHeaders });
   const resource = buildResource({ serviceName, instanceId, gitCommit, githubUrl, env });
 
   // Configure logger
-  const logExporter = new OTLPLogExporter({ url: baseUrl + '/v1/logs', headers });
+  const logExporter = new OTLPLogExporter({ url: url + '/v1/logs', headers });
   const logRecordProcessor = new SimpleLogRecordProcessor(logExporter);
   const loggerProvider = new LoggerProvider({ resource });
   loggerProvider.addLogRecordProcessor(logRecordProcessor);
   logs.setGlobalLoggerProvider(loggerProvider);
 
   // Configure tracer
-  const traceExporter = new OTLPTraceExporter({ url: baseUrl + '/v1/traces', headers });
-  const spanProcessor = new SimpleSpanProcessor(traceExporter);
+  const traceExporter = new OTLPTraceExporter({ url: url + '/v1/traces', headers });
+  const spanProcessor = settings.emitToConsole
+    ? new SimpleSpanProcessor(new ConsoleSpanExporter())
+    : new BatchSpanProcessor(traceExporter);
 
   // INSTRUMENT
-  const provider = new WebTracerProvider();
+  const provider = new WebTracerProvider({ resource });
   provider.addSpanProcessor(spanProcessor);
   provider.register({
     contextManager: new ZoneContextManager(),
-    propagator: new B3Propagator(),
   });
 
   const instrumentationConfigMap: InstrumentationConfigMap = {};
@@ -116,18 +139,35 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
     instrumentationConfigMap['@opentelemetry/instrumentation-user-interaction']
       = { enabled: false };
     instrumentationConfigMap['@opentelemetry/instrumentation-document-load']
-    = { enabled: false };
+      = { enabled: false };
   }
+
+  // Default off
+  if (!settings.instrumentFetch || settings.instrumentFetch == undefined) {
+    instrumentationConfigMap['@opentelemetry/instrumentation-fetch']
+      = { enabled: false };
+  }
+
 
   if (!settings.instrumentXhr || settings.instrumentXhr != undefined) {
     instrumentationConfigMap['@opentelemetry/instrumentation-xml-http-request']
       = { enabled: false };
   }
 
+  const instrumentations: Instrumentation[] = [
+    // Not really using any instrumentation in here right now
+    // getWebAutoInstrumentations(otelConfig || instrumentationConfigMap),
+  ];
+
+  // User interaction instrumentation depends on window
+  if (typeof window !== 'undefined') {
+    instrumentations.push(new UserInteractionInstrumentation(
+      otelConfig['@opentelemetry/instrumentation-user-interaction'],
+    ));
+  }
+
   // Registering instrumentations
-  registerInstrumentations({
-    instrumentations: [getWebAutoInstrumentations(instrumentationConfigMap)],
-  });
+  registerInstrumentations({ instrumentations });
 
   // Instrument console
   if (settings.instrumentConsole || settings.instrumentConsole == undefined) {
@@ -149,7 +189,7 @@ export function buildHeaders(
     iudexApiKey,
     publicWriteOnlyIudexApiKey,
     headers: configHeaders,
-  } = { ...defaultInstrumentConfig, ...instrumentConfig };
+  } = { ...defaultInstrumentConfig(), ...instrumentConfig };
 
   const headers: Record<string, string> = { ...configHeaders };
   if (publicWriteOnlyIudexApiKey) {
@@ -173,7 +213,7 @@ export function buildResource(
     gitCommit,
     githubUrl,
     env,
-  } = { ...defaultInstrumentConfig, ...instrumentConfig };
+  } = { ...defaultInstrumentConfig(), ...instrumentConfig };
 
   return new Resource(_.omitBy({
     [SEMRESATTRS_SERVICE_NAME]: serviceName,
@@ -182,18 +222,4 @@ export function buildResource(
     'github.url': githubUrl,
     'env': env,
   }, _.isNil));
-}
-
-
-export function lazyObj<T extends object>(instantiator: () => T): T {
-  let inst: T | undefined;
-  return new Proxy({} as T, {
-    get(target, prop, reciever) {
-      if (inst == undefined) {
-        inst = instantiator();
-      }
-      reciever.get = (target: T, prop: keyof T) => target[prop];
-      return inst[prop as keyof T];
-    },
-  });
 }

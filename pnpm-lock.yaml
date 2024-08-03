@@ -9,8 +9,11 @@ dependencies:
     version: 0.52.1
   '@opentelemetry/auto-instrumentations-web':
     specifier: ^0.40.0
-    version: 0.40.0(@opentelemetry/api@1.9.0)(zone.js@0.14.7)
+    version: 0.40.0(@opentelemetry/api@1.9.0)(zone.js@0.14.8)
   '@opentelemetry/context-zone':
+    specifier: ^1.25.1
+    version: 1.25.1(@opentelemetry/api@1.9.0)
+  '@opentelemetry/core':
     specifier: ^1.25.1
     version: 1.25.1(@opentelemetry/api@1.9.0)
   '@opentelemetry/exporter-logs-otlp-proto':
@@ -82,6 +85,9 @@ dependencies:
   ramda:
     specifier: ^0.30.1
     version: 0.30.1
+  zone.js:
+    specifier: ^0.14.8
+    version: 0.14.8
 
 devDependencies:
   '@cloudflare/workers-types':
@@ -535,7 +541,7 @@ packages:
     engines: {node: '>=8.0.0'}
     dev: false
 
-  /@opentelemetry/auto-instrumentations-web@0.40.0(@opentelemetry/api@1.9.0)(zone.js@0.14.7):
+  /@opentelemetry/auto-instrumentations-web@0.40.0(@opentelemetry/api@1.9.0)(zone.js@0.14.8):
     resolution: {integrity: sha512-WaeIjd9HyK+cGitynZrDocIqLnNQj1NrBwo5R3z/xHW+oYhkBpo8GwuvdSZW7erVqqPcRntHQt+IF+eUi9Tylw==}
     engines: {node: '>=14'}
     peerDependencies:
@@ -546,14 +552,14 @@ packages:
       '@opentelemetry/instrumentation': 0.52.1(@opentelemetry/api@1.9.0)
       '@opentelemetry/instrumentation-document-load': 0.39.0(@opentelemetry/api@1.9.0)
       '@opentelemetry/instrumentation-fetch': 0.52.1(@opentelemetry/api@1.9.0)
-      '@opentelemetry/instrumentation-user-interaction': 0.39.0(@opentelemetry/api@1.9.0)(zone.js@0.14.7)
+      '@opentelemetry/instrumentation-user-interaction': 0.39.0(@opentelemetry/api@1.9.0)(zone.js@0.14.8)
       '@opentelemetry/instrumentation-xml-http-request': 0.52.1(@opentelemetry/api@1.9.0)
-      zone.js: 0.14.7
+      zone.js: 0.14.8
     transitivePeerDependencies:
       - supports-color
     dev: false
 
-  /@opentelemetry/context-zone-peer-dep@1.25.1(@opentelemetry/api@1.9.0)(zone.js@0.14.7):
+  /@opentelemetry/context-zone-peer-dep@1.25.1(@opentelemetry/api@1.9.0)(zone.js@0.14.8):
     resolution: {integrity: sha512-UxSY9K90xOg2eI7qZStx0HV6DZT6tcRX+IiAWTvROi6h9Td2c2vlQhBZ9F1JH7kINmNCZN1f1//O9rSioPEMlg==}
     engines: {node: '>=14'}
     peerDependencies:
@@ -561,15 +567,15 @@ packages:
       zone.js: ^0.10.2 || ^0.11.0 || ^0.12.0 || ^0.13.0 || ^0.14.0
     dependencies:
       '@opentelemetry/api': 1.9.0
-      zone.js: 0.14.7
+      zone.js: 0.14.8
     dev: false
 
   /@opentelemetry/context-zone@1.25.1(@opentelemetry/api@1.9.0):
     resolution: {integrity: sha512-kHbMs95mKNJPpfd1LE1/IRxUw5D1fyTOM+0R1yDOOzffs9ZZsQqgQ1Q7q0bWZ/kVLWjL43fiALe+rPtQvRShdg==}
     engines: {node: '>=14'}
     dependencies:
-      '@opentelemetry/context-zone-peer-dep': 1.25.1(@opentelemetry/api@1.9.0)(zone.js@0.14.7)
-      zone.js: 0.14.7
+      '@opentelemetry/context-zone-peer-dep': 1.25.1(@opentelemetry/api@1.9.0)(zone.js@0.14.8)
+      zone.js: 0.14.8
     transitivePeerDependencies:
       - '@opentelemetry/api'
     dev: false
@@ -645,7 +651,7 @@ packages:
       - supports-color
     dev: false
 
-  /@opentelemetry/instrumentation-user-interaction@0.39.0(@opentelemetry/api@1.9.0)(zone.js@0.14.7):
+  /@opentelemetry/instrumentation-user-interaction@0.39.0(@opentelemetry/api@1.9.0)(zone.js@0.14.8):
     resolution: {integrity: sha512-hO/D1g8/P1fo5lEEHpxHHnxXDRfysjBZdFGwR6oSIoZWAQW1EasxZRe2mYDnxc37vEZsFFxTWXayH+XMKOo/sw==}
     engines: {node: '>=14'}
     peerDependencies:
@@ -656,7 +662,7 @@ packages:
       '@opentelemetry/core': 1.25.1(@opentelemetry/api@1.9.0)
       '@opentelemetry/instrumentation': 0.52.1(@opentelemetry/api@1.9.0)
       '@opentelemetry/sdk-trace-web': 1.25.1(@opentelemetry/api@1.9.0)
-      zone.js: 0.14.7
+      zone.js: 0.14.8
     transitivePeerDependencies:
       - supports-color
     dev: false
@@ -4052,6 +4058,6 @@ packages:
     hasBin: true
     dev: true
 
-  /zone.js@0.14.7:
-    resolution: {integrity: sha512-0w6DGkX2BPuiK/NLf+4A8FLE43QwBfuqz2dVgi/40Rj1WmqUskCqj329O/pwrqFJLG5X8wkeG2RhIAro441xtg==}
+  /zone.js@0.14.8:
+    resolution: {integrity: sha512-48uh7MnVp4/OQDuCHeFdXw5d8xwPqFTvlHgPJ1LBFb5GaustLSZV+YUH0to5ygNyGpqTsjpbpt141U/j3pCfqQ==}
     dev: false

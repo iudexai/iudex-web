@@ -3,7 +3,12 @@
   "compilerOptions": {
     "incremental": false,
     "outDir": "dist",
-    "types": [],
+    "typeRoots": [
+      "node_modules/@types",
+    ],
+    "types": [
+      "zone.js"
+    ],
   },
   "exclude": [
     "node_modules",

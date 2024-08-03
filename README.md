@@ -7,6 +7,7 @@ Next generation observability. For Node compatible IUDEX, use [iudex-node](https
     - [Table of contents](#table-of-contents)
 - [Getting Started](#getting-started)
     - [NextJS](#nextjs)
+    - [CRA](#cra)
     - [Autoinstrument](#autoinstrument)
     - [Cloudflare Workers](#cloudflare-workers)
     - [Console](#console)
@@ -40,7 +41,7 @@ npm install iudex-web
 
 
 ### NextJS
-We will follow the first half of [NextJS's OpenTelemetry Guide](https://nextjs.org/docs/app/building-your-application/optimizing/open-telemetry) then make a few changes to introduce IUDEX features and pipe the telemetry to the IUDEX backend which then can be viewed at [https://app.iudex.ai/services](https://app.iudex.ai/services).
+We will follow the first half of [NextJS's OpenTelemetry Guide](https://nextjs.org/docs/app/building-your-application/optimizing/open-telemetry) then make a few changes to introduce IUDEX features and pipe the telemetry to the IUDEX backend which then can be viewed at [https://app.iudex.ai/traces](https://app.iudex.ai/traces).
 
 1. Add `experimental.instrumentationHook = true`; in your `next.config.js`
 2. Install vercel otel and iudex-web `npm install @vercel/otel iudex-web`
@@ -52,16 +53,35 @@ import { registerOTelOptions } from 'iudex-web';
 
 export function register() {
   const options = registerOTelOptions({
-    serviceName: <name_of_your_nextjs_app>,
+    serviceName: <name_of_your_nextjs_app>, // highly encouraged
+    env: <your_environment>, // optional
     publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here>
   });
   registerOTel(options);
 }
 ```
-5. Go to [https://app.iudex.ai/services](https://app.iudex.ai/services) to view your NextJS traces.
+5. Go to [https://app.iudex.ai/traces](https://app.iudex.ai/traces) to view your NextJS traces.
+
+
+### CRA
+
+1. Add this code to the top your entrypoint file (likely `index.ts`).
+```typescript
+import { instrument } from 'iudex-web';
+instrument({
+  serviceName: <your_service_name>, // highly encouraged
+  env: <your_environment>, // optional
+  publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here> // only commit your WRITE ONLY key in code
+});
+
+console.log('Hello Iudex!'); // Test logging
+```
+2. Go to [https://app.iudex.ai/logs](https://app.iudex.ai/logs) to view your React app logs.
 
 
 ### Autoinstrument
+
+Some functions are automatically tracked:
 
 ✅ console
 ✅ document.onload
@@ -75,6 +95,7 @@ import { instrument } from 'iudex-web';
 instrument({
   serviceName: <your_service_name>, // highly encouraged
   env: <your_environment>, // optional
+  publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here> // only commit your WRITE ONLY key in code
 });
 ```
 You should be all set! IUDEX will now record logs and trace the entire life cycle for each request.
@@ -88,7 +109,12 @@ For libraries that are not autoinstrumented or if your project uses `"type": "mo
 Cloudflare workers operate differently than the browser environment due to how the environment is loaded and what global objects are available. Wrap your export handler object with `trace` to trace all ExportHandler functions.
 
 ```typescript
-import { iudexCloudflare } from 'iudex-web';
+import { instrument, iudexCloudflare } from 'iudex-web';
+instrument({
+  serviceName: <your_service_name>, // highly encouraged
+  env: <your_environment>, // optional
+  publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here> // only commit your WRITE ONLY key in code
+});
 const { trace, withTracing } = iudexCloudflare;
 import { ExportedHandler } from '@cloudflare/workers-types';
 
@@ -102,7 +128,12 @@ export default trace({
 If you only want to trace specific ExportHandler functions, you can wrap the specific functions with `withTracing`.
 
 ```typescript
-import { iudexCloudflare } from 'iudex-web';
+import { instrument, iudexCloudflare } from 'iudex-web';
+instrument({
+  serviceName: <your_service_name>, // highly encouraged
+  env: <your_environment>, // optional
+  publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here> // only commit your WRITE ONLY key in code
+});
 const { trace, withTracing } = iudexCloudflare;
 import { ExportedHandler, ExportedHandlerFetchHandler } from '@cloudflare/workers-types';
 
@@ -113,13 +144,16 @@ export default {
 } satisfies ExportedHandler;
 ```
 
+
 ### Console
 Add this code snippet to the top your entry point file (likely `index.ts`). Skip this step if you already call `instrument` on your server.
 
 ```typescript
 import { instrument, iudexFastify } from 'iudex-web';
 instrument({
-  serviceName: <your_service_name>,
+  serviceName: <your_service_name>, // highly encouraged
+  env: <your_environment>, // optional
+  publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here> // only commit your WRITE ONLY key in code
 });
 ```
 
@@ -164,18 +198,21 @@ Anytime `myFunction` is called, it will create a span layer in a trace. `trackAr
 
 
 # Slack Alerts
-You can easily configure Slack alerts on a per-log basis.
+You can easily configure Slack alerts on a per-log basis with custom filters an logic by adding it in code.
 
-First visit [https://app.iudex.ai/logs](https://app.iudex.ai/logs) and click on the `Add to Slack` button in the top right.
+1. Visit [https://app.iudex.ai/logs](https://app.iudex.ai/logs) and click on the `Add to Slack` button in the top right.
 
-Once installed to your workspace, tag your logs with the `iudex.slack_channel_id` attribute.
+2.  Once installed to your workspace, tag your logs with the `iudex.slack_channel_id` attribute.
 ```typescript
+// Example using logger
 logger.info({ 'iudex.slack_channel_id': 'YOUR_SLACK_CHANNEL_ID' }, 'Hello from Slack!');
+// Example using console, you must set { ctx }
 console.log('Hello from Slack!', { ctx: { 'iudex.slack_channel_id': 'YOUR_SLACK_CHANNEL_ID' } });
 ```
-Your channel ID can be found by clicking the name of the channel in the top left, then at the bottom of the dialog that pops up.
 
-As long as the channel is public or you've invited the IUDEX app, logs will be sent as messages to their tagged channel any time they are logged.
+3. Your channel ID can be found by clicking the name of the channel in the top left, then at the bottom of the dialog that pops up.
+
+4. As long as the channel is public or you've invited the IUDEX app, logs will be sent as messages to their tagged channel any time they are logged.
 
 
 # API reference
@@ -191,8 +228,11 @@ logger library, find its instrumentation instructions or manually call `emitOtel
   * Sets the url to send the trace and log events to.
   * By default this is `api.iudex.ai`.
 * `iudexApiKey?: string`
-  * Sets the api key which is required to send logs.
+  * Sets the api key to send logs.
   * By default this looks for an api key in `process.env.IUDEX_API_KEY`.
+* `publicWriteOnlyIudexApiKey?: string`
+  * Sets the api key to send logs.
+  * By default this looks for an api key in `process.env.PUBLIC_WRITE_ONLY_IUDEX_API_KEY`.
 * `serviceName?: string`
   * Sets the service name for the instrumented logs.
   * While optional, setting this is highly recommended.

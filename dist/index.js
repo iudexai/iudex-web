@@ -44,8 +44,7 @@ __export(src_exports, {
   getCallerInfo: () => getCallerInfo,
   instrument: () => instrument,
   iudexCloudflare: () => cloudflare_worker_exports,
-  iudexConsole: () => console_exports,
-  lazyObj: () => lazyObj,
+  iudexConsole: () => console_instrumentation_exports,
   nativeConsole: () => nativeConsole,
   registerOTelOptions: () => registerOTelOptions,
   trackAttribute: () => trackAttribute,
@@ -53,7 +52,7 @@ __export(src_exports, {
   withTracing: () => withTracing
 });
 module.exports = __toCommonJS(src_exports);
-var import_api2 = require("@opentelemetry/api");
+var import_api3 = require("@opentelemetry/api");
 
 // src/utils.ts
 var import_semantic_conventions = require("@opentelemetry/semantic-conventions");
@@ -382,22 +381,20 @@ __name(useTracing, "useTracing");
 
 // src/instrument.ts
 var import_sdk_trace_base = require("@opentelemetry/sdk-trace-base");
-var import_sdk_logs = require("@opentelemetry/sdk-logs");
-var import_resources = require("@opentelemetry/resources");
-var import_api_logs2 = require("@opentelemetry/api-logs");
+var import_sdk_logs2 = require("@opentelemetry/sdk-logs");
+var import_resources2 = require("@opentelemetry/resources");
+var import_api_logs3 = require("@opentelemetry/api-logs");
 var import_exporter_logs_otlp_proto = require("@opentelemetry/exporter-logs-otlp-proto");
 var import_exporter_trace_otlp_http = require("@opentelemetry/exporter-trace-otlp-http");
-var import_sdk_trace_web = require("@opentelemetry/sdk-trace-web");
+var import_sdk_trace_web2 = require("@opentelemetry/sdk-trace-web");
 var import_context_zone = require("@opentelemetry/context-zone");
-var import_instrumentation = require("@opentelemetry/instrumentation");
-var import_auto_instrumentations_web = require("@opentelemetry/auto-instrumentations-web");
-var import_propagator_b3 = require("@opentelemetry/propagator-b3");
+var import_instrumentation2 = require("@opentelemetry/instrumentation");
 var import_semantic_conventions2 = require("@opentelemetry/semantic-conventions");
 var import_lodash2 = __toESM(require("lodash"));
 
-// src/console.ts
-var console_exports = {};
-__export(console_exports, {
+// src/instrumentations/console-instrumentation.ts
+var console_instrumentation_exports = {};
+__export(console_instrumentation_exports, {
   instrumentConsole: () => instrumentConsole
 });
 var R = __toESM(require("ramda"));
@@ -444,8 +441,760 @@ function isObject(obj) {
 }
 __name(isObject, "isObject");
 
+// src/opentelemetry/logger-provider.ts
+var import_api2 = require("@opentelemetry/api");
+var import_api_logs2 = require("@opentelemetry/api-logs");
+var import_sdk_logs = require("@opentelemetry/sdk-logs");
+var import_core = require("@opentelemetry/core");
+var import_LoggerProviderSharedState = require("@opentelemetry/sdk-logs/build/src/internal/LoggerProviderSharedState.js");
+var import_resources = require("@opentelemetry/resources");
+var DEFAULT_LOGGER_NAME = "unknown";
+var LoggerProvider = class {
+  static {
+    __name(this, "LoggerProvider");
+  }
+  _shutdownOnce;
+  _sharedState;
+  constructor(config2 = {}) {
+    const mergedConfig = merge(loadDefaultConfig(), config2);
+    const resource = import_resources.Resource.default().merge(
+      mergedConfig.resource ?? import_resources.Resource.empty()
+    );
+    this._sharedState = new import_LoggerProviderSharedState.LoggerProviderSharedState(
+      resource,
+      mergedConfig.forceFlushTimeoutMillis,
+      reconfigureLimits(mergedConfig.logRecordLimits)
+    );
+    this._shutdownOnce = new import_core.BindOnceFuture(this._shutdown, this);
+  }
+  /**
+   * Get a logger with the configuration of the LoggerProvider.
+   */
+  getLogger(name, version, options) {
+    if (this._shutdownOnce.isCalled) {
+      import_api2.diag.warn("A shutdown LoggerProvider cannot provide a Logger");
+      return import_api_logs2.NOOP_LOGGER;
+    }
+    if (!name) {
+      import_api2.diag.warn("Logger requested without instrumentation scope name.");
+    }
+    const loggerName = name || DEFAULT_LOGGER_NAME;
+    const key = `${loggerName}@${version || ""}:${options?.schemaUrl || ""}`;
+    if (!this._sharedState.loggers.has(key)) {
+      this._sharedState.loggers.set(
+        key,
+        new Logger(
+          { name: loggerName, version, schemaUrl: options?.schemaUrl },
+          this._sharedState
+        )
+      );
+    }
+    return this._sharedState.loggers.get(key);
+  }
+  /**
+   * Adds a new {@link LogRecordProcessor} to this logger.
+   * @param processor the new LogRecordProcessor to be added.
+   */
+  addLogRecordProcessor(processor) {
+    if (this._sharedState.registeredLogRecordProcessors.length === 0) {
+      this._sharedState.activeProcessor.shutdown().catch(
+        (err) => import_api2.diag.error(
+          "Error while trying to shutdown current log record processor",
+          err
+        )
+      );
+    }
+    this._sharedState.registeredLogRecordProcessors.push(processor);
+    this._sharedState.activeProcessor = new MultiLogRecordProcessor(
+      this._sharedState.registeredLogRecordProcessors,
+      this._sharedState.forceFlushTimeoutMillis
+    );
+  }
+  /**
+   * Notifies all registered LogRecordProcessor to flush any buffered data.
+   *
+   * Returns a promise which is resolved when all flushes are complete.
+   */
+  forceFlush() {
+    if (this._shutdownOnce.isCalled) {
+      import_api2.diag.warn("invalid attempt to force flush after LoggerProvider shutdown");
+      return this._shutdownOnce.promise;
+    }
+    return this._sharedState.activeProcessor.forceFlush();
+  }
+  /**
+   * Flush all buffered data and shut down the LoggerProvider and all registered
+   * LogRecordProcessor.
+   *
+   * Returns a promise which is resolved when all flushes are complete.
+   */
+  shutdown() {
+    if (this._shutdownOnce.isCalled) {
+      import_api2.diag.warn("shutdown may only be called once per LoggerProvider");
+      return this._shutdownOnce.promise;
+    }
+    return this._shutdownOnce.call();
+  }
+  _shutdown() {
+    return this._sharedState.activeProcessor.shutdown();
+  }
+};
+var MultiLogRecordProcessor = class {
+  constructor(processors, forceFlushTimeoutMillis) {
+    this.processors = processors;
+    this.forceFlushTimeoutMillis = forceFlushTimeoutMillis;
+  }
+  static {
+    __name(this, "MultiLogRecordProcessor");
+  }
+  async forceFlush() {
+    const timeout = this.forceFlushTimeoutMillis;
+    await Promise.all(
+      this.processors.map(
+        (processor) => (0, import_core.callWithTimeout)(processor.forceFlush(), timeout)
+      )
+    );
+  }
+  onEmit(logRecord, context3) {
+    this.processors.forEach((processors) => processors.onEmit(logRecord, context3));
+  }
+  async shutdown() {
+    await Promise.all(this.processors.map((processor) => processor.shutdown()));
+  }
+};
+function loadDefaultConfig() {
+  return {
+    forceFlushTimeoutMillis: 3e4,
+    logRecordLimits: {
+      attributeValueLengthLimit: (0, import_core.getEnv)().OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT,
+      attributeCountLimit: (0, import_core.getEnv)().OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT
+    },
+    includeTraceContext: true
+  };
+}
+__name(loadDefaultConfig, "loadDefaultConfig");
+function reconfigureLimits(logRecordLimits) {
+  const parsedEnvConfig = (0, import_core.getEnvWithoutDefaults)();
+  return {
+    attributeCountLimit: logRecordLimits.attributeCountLimit ?? parsedEnvConfig.OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT ?? parsedEnvConfig.OTEL_ATTRIBUTE_COUNT_LIMIT ?? import_core.DEFAULT_ATTRIBUTE_COUNT_LIMIT,
+    attributeValueLengthLimit: logRecordLimits.attributeValueLengthLimit ?? parsedEnvConfig.OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT ?? parsedEnvConfig.OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT ?? import_core.DEFAULT_ATTRIBUTE_VALUE_LENGTH_LIMIT
+  };
+}
+__name(reconfigureLimits, "reconfigureLimits");
+var Logger = class {
+  constructor(instrumentationScope, _sharedState) {
+    this.instrumentationScope = instrumentationScope;
+    this._sharedState = _sharedState;
+  }
+  static {
+    __name(this, "Logger");
+  }
+  emit(logRecord) {
+    const currentContext = logRecord.context || import_api2.context.active();
+    const logRecordInstance = new import_sdk_logs.LogRecord(
+      this._sharedState,
+      this.instrumentationScope,
+      {
+        context: currentContext,
+        ...logRecord
+      }
+    );
+    this._sharedState.activeProcessor.onEmit(logRecordInstance, currentContext);
+    logRecordInstance._makeReadonly();
+  }
+};
+function isObject2(item) {
+  return item && typeof item === "object" && !Array.isArray(item);
+}
+__name(isObject2, "isObject");
+function merge(target, source) {
+  let output = Object.assign({}, target);
+  if (isObject2(target) && isObject2(source)) {
+    Object.keys(source).forEach((key) => {
+      if (isObject2(source[key])) {
+        if (!(key in target)) {
+          Object.assign(output, { [key]: source[key] });
+        } else {
+          const targetVal = target[key];
+          const sourceVal = source[key];
+          if (isObject2(targetVal) && isObject2(sourceVal)) {
+            output[key] = merge(targetVal, sourceVal);
+          }
+        }
+      } else {
+        Object.assign(output, { [key]: source[key] });
+      }
+    });
+  }
+  return output;
+}
+__name(merge, "merge");
+
+// src/instrumentations/user-interaction-instrumentation.ts
+var import_instrumentation = require("@opentelemetry/instrumentation");
+var api = __toESM(require("@opentelemetry/api"));
+var import_core2 = require("@opentelemetry/core");
+var import_sdk_trace_web = require("@opentelemetry/sdk-trace-web");
+var PACKAGE_NAME = "iudex-web/instrumentation-user-interaction";
+var PACKAGE_VERSION = "0.39.0";
+var ZONE_CONTEXT_KEY = "OT_ZONE_CONTEXT";
+var EVENT_NAVIGATION_NAME = "Navigation:";
+var DEFAULT_EVENT_NAMES = ["click"];
+function defaultShouldPreventSpanCreation() {
+  return false;
+}
+__name(defaultShouldPreventSpanCreation, "defaultShouldPreventSpanCreation");
+var UserInteractionInstrumentation = class extends import_instrumentation.InstrumentationBase {
+  static {
+    __name(this, "UserInteractionInstrumentation");
+  }
+  version = PACKAGE_VERSION;
+  moduleName = "user-interaction";
+  _spansData = /* @__PURE__ */ new WeakMap();
+  _zonePatched;
+  // for addEventListener/removeEventListener state
+  _wrappedListeners = /* @__PURE__ */ new WeakMap();
+  // for event bubbling
+  _eventsSpanMap = /* @__PURE__ */ new WeakMap();
+  _eventNames;
+  _shouldPreventSpanCreation;
+  // How to connect event with when react handles it?
+  spansByPendingEvent = /* @__PURE__ */ new Map();
+  constructor(config2 = {}) {
+    super(PACKAGE_NAME, PACKAGE_VERSION, config2);
+    this._eventNames = new Set(config2?.eventNames ?? DEFAULT_EVENT_NAMES);
+    this._shouldPreventSpanCreation = typeof config2?.shouldPreventSpanCreation === "function" ? config2.shouldPreventSpanCreation : defaultShouldPreventSpanCreation;
+  }
+  init() {
+  }
+  /**
+   * This will check if last task was timeout and will save the time to
+   * fix the user interaction when nothing happens
+   * This timeout comes from xhr plugin which is needed to collect information
+   * about last xhr main request from observer
+   * @param task
+   * @param span
+   */
+  _checkForTimeout(task, span) {
+    const spanData = this._spansData.get(span);
+    if (spanData) {
+      if (task.source === "setTimeout") {
+        spanData.hrTimeLastTimeout = (0, import_core2.hrTime)();
+      } else if (task.source !== "Promise.then" && task.source !== "setTimeout") {
+        spanData.hrTimeLastTimeout = void 0;
+      }
+    }
+  }
+  /**
+   * Controls whether or not to create a span, based on the event type.
+   */
+  _allowEventName(eventName) {
+    return this._eventNames.has(eventName);
+  }
+  /**
+   * Creates a new span
+   * @param element
+   * @param eventName
+   * @param parentSpan
+   */
+  _createSpan(element, eventName, parentSpan) {
+    if (!(element instanceof HTMLElement)) {
+      return void 0;
+    }
+    if (!element.getAttribute) {
+      return void 0;
+    }
+    if (element.hasAttribute("disabled")) {
+      return void 0;
+    }
+    if (!this._allowEventName(eventName)) {
+      return void 0;
+    }
+    const xpath = (0, import_sdk_trace_web.getElementXPath)(element, true);
+    try {
+      const span = this.tracer.startSpan(
+        eventName,
+        {
+          attributes: {
+            ["event_type" /* EVENT_TYPE */]: eventName,
+            ["target_element" /* TARGET_ELEMENT */]: element.tagName,
+            ["target_xpath" /* TARGET_XPATH */]: xpath,
+            ["http.url" /* HTTP_URL */]: window.location.href
+          }
+        },
+        parentSpan ? api.trace.setSpan(api.context.active(), parentSpan) : void 0
+      );
+      if (this._shouldPreventSpanCreation(eventName, element, span) === true) {
+        return void 0;
+      }
+      this._spansData.set(span, {
+        taskCount: 0
+      });
+      return span;
+    } catch (e) {
+      this._diag.error("failed to start create new user interaction span", e);
+    }
+    return void 0;
+  }
+  /**
+   * Decrement number of tasks that left in zone,
+   * This is needed to be able to end span when no more tasks left
+   * @param span
+   */
+  _decrementTask(span) {
+    const spanData = this._spansData.get(span);
+    if (spanData) {
+      spanData.taskCount--;
+      if (spanData.taskCount === 0) {
+        this._tryToEndSpan(span, spanData.hrTimeLastTimeout);
+      }
+    }
+  }
+  /**
+   * Return the current span
+   * @param zone
+   * @private
+   */
+  _getCurrentSpan(zone) {
+    const context3 = zone.get(ZONE_CONTEXT_KEY);
+    if (context3) {
+      return api.trace.getSpan(context3);
+    }
+    return context3;
+  }
+  /**
+   * Increment number of tasks that are run within the same zone.
+   *     This is needed to be able to end span when no more tasks left
+   * @param span
+   */
+  _incrementTask(span) {
+    const spanData = this._spansData.get(span);
+    if (spanData) {
+      spanData.taskCount++;
+    }
+  }
+  /**
+   * Returns true iff we should use the patched callback; false if it's already been patched
+   */
+  addPatchedListener(on, type, listener, wrappedListener) {
+    let listener2Type = this._wrappedListeners.get(listener);
+    if (!listener2Type) {
+      listener2Type = /* @__PURE__ */ new Map();
+      this._wrappedListeners.set(listener, listener2Type);
+    }
+    let element2patched = listener2Type.get(type);
+    if (!element2patched) {
+      element2patched = /* @__PURE__ */ new Map();
+      listener2Type.set(type, element2patched);
+    }
+    if (element2patched.has(on)) {
+      return false;
+    }
+    element2patched.set(on, wrappedListener);
+    return true;
+  }
+  /**
+   * Returns the patched version of the callback (or undefined)
+   */
+  removePatchedListener(on, type, listener) {
+    const listener2Type = this._wrappedListeners.get(listener);
+    if (!listener2Type) {
+      return void 0;
+    }
+    const element2patched = listener2Type.get(type);
+    if (!element2patched) {
+      return void 0;
+    }
+    const patched = element2patched.get(on);
+    if (patched) {
+      element2patched.delete(on);
+      if (element2patched.size === 0) {
+        listener2Type.delete(type);
+        if (listener2Type.size === 0) {
+          this._wrappedListeners.delete(listener);
+        }
+      }
+    }
+    return patched;
+  }
+  // utility method to deal with the Function|EventListener nature of addEventListener
+  _invokeListener(listener, target, args) {
+    if (typeof listener === "function") {
+      return listener.apply(target, args);
+    } else {
+      return listener.handleEvent(args[0]);
+    }
+  }
+  /**
+   * This patches the addEventListener of HTMLElement to be able to
+   * auto instrument the click events
+   * This is done when zone is not available
+   */
+  _patchAddEventListener() {
+  }
+  /**
+   * This patches the removeEventListener of HTMLElement to handle the fact that
+   * we patched the original callbacks
+   * This is done when zone is not available
+   */
+  _patchRemoveEventListener() {
+  }
+  /**
+   * Most browser provide event listener api via EventTarget in prototype chain.
+   * Exception to this is IE 11 which has it on the prototypes closest to EventTarget:
+   *
+   * * - has addEventListener in IE
+   * ** - has addEventListener in all other browsers
+   * ! - missing in IE
+   *
+   * HTMLElement -> Element -> Node * -> EventTarget **! -> Object
+   * Document -> Node * -> EventTarget **! -> Object
+   * Window * -> WindowProperties ! -> EventTarget **! -> Object
+   */
+  _getPatchableEventTargets() {
+    return window.EventTarget ? [EventTarget.prototype] : [Node.prototype, Window.prototype];
+  }
+  /**
+   * Patches the history api
+   */
+  _patchHistoryApi() {
+    this._unpatchHistoryApi();
+    this._wrap(history, "replaceState", this._patchHistoryMethod());
+    this._wrap(history, "pushState", this._patchHistoryMethod());
+    this._wrap(history, "back", this._patchHistoryMethod());
+    this._wrap(history, "forward", this._patchHistoryMethod());
+    this._wrap(history, "go", this._patchHistoryMethod());
+  }
+  /**
+   * Patches the certain history api method
+   */
+  _patchHistoryMethod() {
+    const plugin = this;
+    return (original) => {
+      return /* @__PURE__ */ __name(function patchHistoryMethod(...args) {
+        const url = `${location.pathname}${location.hash}${location.search}`;
+        const result = original.apply(this, args);
+        const urlAfter = `${location.pathname}${location.hash}${location.search}`;
+        if (url !== urlAfter) {
+          plugin._updateInteractionName(urlAfter);
+        }
+        return result;
+      }, "patchHistoryMethod");
+    };
+  }
+  /**
+   * unpatch the history api methods
+   */
+  _unpatchHistoryApi() {
+    if ((0, import_instrumentation.isWrapped)(history.replaceState)) this._unwrap(history, "replaceState");
+    if ((0, import_instrumentation.isWrapped)(history.pushState)) this._unwrap(history, "pushState");
+    if ((0, import_instrumentation.isWrapped)(history.back)) this._unwrap(history, "back");
+    if ((0, import_instrumentation.isWrapped)(history.forward)) this._unwrap(history, "forward");
+    if ((0, import_instrumentation.isWrapped)(history.go)) this._unwrap(history, "go");
+  }
+  /**
+   * Updates interaction span name
+   * @param url
+   */
+  _updateInteractionName(url) {
+    const span = api.trace.getSpan(api.context.active());
+    if (span && typeof span.updateName === "function") {
+      span.updateName(`${EVENT_NAVIGATION_NAME} ${url}`);
+    }
+  }
+  /**
+   * Patches zone cancel task - this is done to be able to correctly
+   * decrement the number of remaining tasks
+   */
+  _patchZoneCancelTask() {
+    const plugin = this;
+    return (original) => {
+      return /* @__PURE__ */ __name(function patchCancelTask(task) {
+        const currentZone = Zone.current;
+        const currentSpan = plugin._getCurrentSpan(currentZone);
+        if (currentSpan && plugin._shouldCountTask(task, currentZone)) {
+          plugin._decrementTask(currentSpan);
+        }
+        return original.call(this, task);
+      }, "patchCancelTask");
+    };
+  }
+  /**
+   * Patches zone schedule task - this is done to be able to correctly
+   * increment the number of tasks running within current zone but also to
+   * save time in case of timeout running from xhr plugin when waiting for
+   * main request from PerformanceResourceTiming
+   */
+  _patchZoneScheduleTask() {
+    const plugin = this;
+    return (original) => {
+      return /* @__PURE__ */ __name(function patchScheduleTask(task) {
+        const currentZone = Zone.current;
+        const currentSpan = plugin._getCurrentSpan(currentZone);
+        if (currentSpan && plugin._shouldCountTask(task, currentZone)) {
+          plugin._incrementTask(currentSpan);
+          plugin._checkForTimeout(task, currentSpan);
+        }
+        return original.call(this, task);
+      }, "patchScheduleTask");
+    };
+  }
+  /**
+   * Patches zone run task - this is done to be able to create a span when
+   * user interaction starts
+   * @private
+   */
+  _patchZoneRunTask() {
+    const plugin = this;
+    return (original) => {
+      return /* @__PURE__ */ __name(function patchRunTask(task, applyThis, applyArgs) {
+        const event = Array.isArray(applyArgs) && applyArgs[0] instanceof Event ? applyArgs[0] : void 0;
+        const target = event?.target;
+        const activeZone = this;
+        const span = target ? plugin._createSpan(target, task.eventName) : plugin._getCurrentSpan(this);
+        if (target && span) {
+          plugin._incrementTask(span);
+          const isReactEvent = Object.keys(target).some((k) => k.startsWith("__reactFiber$"));
+          if (isReactEvent) {
+            plugin._incrementTask(span);
+            const spans = plugin.spansByPendingEvent.get(task.eventName) || [];
+            spans.push(span);
+            plugin.spansByPendingEvent.set(task.eventName, spans);
+          }
+          return activeZone.run(() => {
+            try {
+              return api.context.with(
+                api.trace.setSpan(api.context.active(), span),
+                () => {
+                  const currentZone = Zone.current;
+                  task._zone = currentZone;
+                  return original.call(
+                    currentZone,
+                    task,
+                    applyThis,
+                    applyArgs
+                  );
+                }
+              );
+            } catch (e) {
+              const error = e;
+              span.setStatus({ code: api.SpanStatusCode.ERROR, message: error.message });
+              span.recordException(error);
+              emitOtelLog({ level: "ERROR", body: error.zoneAwareStack || error.stack });
+              throw e;
+            } finally {
+              plugin._decrementTask(span);
+            }
+          });
+        }
+        if (event?.type?.startsWith("react-")) {
+          const eventType = event.type.split("react-", 2)[1];
+          if (eventType) {
+            const spans = plugin.spansByPendingEvent.get(eventType);
+            if (spans?.length) {
+              const span2 = spans.shift();
+              if (span2) {
+                return activeZone.run(() => {
+                  try {
+                    return api.context.with(
+                      api.trace.setSpan(api.context.active(), span2),
+                      () => {
+                        const currentZone = Zone.current;
+                        task._zone = currentZone;
+                        return original.call(
+                          currentZone,
+                          task,
+                          applyThis,
+                          applyArgs
+                        );
+                      }
+                    );
+                  } catch (e) {
+                    const error = e;
+                    span2.setStatus({ code: api.SpanStatusCode.ERROR, message: error.message });
+                    span2.recordException(error);
+                    emitOtelLog({ level: "ERROR", body: error.zoneAwareStack || error.stack });
+                    throw e;
+                  } finally {
+                    plugin._decrementTask(span2);
+                  }
+                });
+              }
+            }
+          }
+        }
+        try {
+          return original.call(activeZone, task, applyThis, applyArgs);
+        } catch (e) {
+          const error = e;
+          span?.setStatus({ code: api.SpanStatusCode.ERROR, message: error.message });
+          span?.recordException(error);
+          emitOtelLog({ level: "ERROR", body: error.zoneAwareStack || error.stack });
+          throw e;
+        } finally {
+          if (span && plugin._shouldCountTask(task, activeZone)) {
+            plugin._decrementTask(span);
+          }
+        }
+      }, "patchRunTask");
+    };
+  }
+  /**
+   * Decides if task should be counted.
+   * @param task
+   * @param currentZone
+   * @private
+   */
+  _shouldCountTask(task, currentZone) {
+    if (task._zone) {
+      currentZone = task._zone;
+    }
+    if (!currentZone || !task.data || task.data.isPeriodic) {
+      return false;
+    }
+    const currentSpan = this._getCurrentSpan(currentZone);
+    if (!currentSpan) {
+      return false;
+    }
+    if (!this._spansData.get(currentSpan)) {
+      return false;
+    }
+    return task.type === "macroTask" || task.type === "microTask";
+  }
+  /**
+   * Will try to end span when such span still exists.
+   * @param span
+   * @param endTime
+   * @private
+   */
+  _tryToEndSpan(span, endTime) {
+    if (span) {
+      const spanData = this._spansData.get(span);
+      if (spanData) {
+        span.end(endTime);
+        this._spansData.delete(span);
+      }
+    }
+  }
+  /**
+   * implements enable function
+   */
+  enable() {
+    const ZoneWithPrototype = this.getZoneWithPrototype();
+    this._diag.debug(
+      "applying patch to",
+      this.moduleName,
+      this.version,
+      "zone:",
+      !!ZoneWithPrototype
+    );
+    if (ZoneWithPrototype) {
+      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.runTask)) {
+        this._unwrap(ZoneWithPrototype.prototype, "runTask");
+        this._diag.debug("removing previous patch from method runTask");
+      }
+      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.scheduleTask)) {
+        this._unwrap(ZoneWithPrototype.prototype, "scheduleTask");
+        this._diag.debug("removing previous patch from method scheduleTask");
+      }
+      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.cancelTask)) {
+        this._unwrap(ZoneWithPrototype.prototype, "cancelTask");
+        this._diag.debug("removing previous patch from method cancelTask");
+      }
+      this._zonePatched = true;
+      this._wrap(
+        ZoneWithPrototype.prototype,
+        "runTask",
+        this._patchZoneRunTask()
+      );
+      this._wrap(
+        ZoneWithPrototype.prototype,
+        "scheduleTask",
+        this._patchZoneScheduleTask()
+      );
+      this._wrap(
+        ZoneWithPrototype.prototype,
+        "cancelTask",
+        this._patchZoneCancelTask()
+      );
+    } else {
+      this._zonePatched = false;
+      const targets = this._getPatchableEventTargets();
+      targets.forEach((target) => {
+        if ((0, import_instrumentation.isWrapped)(target.addEventListener)) {
+          this._unwrap(target, "addEventListener");
+          this._diag.debug(
+            "removing previous patch from method addEventListener"
+          );
+        }
+        if ((0, import_instrumentation.isWrapped)(target.removeEventListener)) {
+          this._unwrap(target, "removeEventListener");
+          this._diag.debug(
+            "removing previous patch from method removeEventListener"
+          );
+        }
+        this._wrap(target, "addEventListener", this._patchAddEventListener());
+        this._wrap(
+          target,
+          "removeEventListener",
+          this._patchRemoveEventListener()
+        );
+      });
+    }
+    this._patchHistoryApi();
+  }
+  /**
+   * implements unpatch function
+   */
+  disable() {
+    const ZoneWithPrototype = this.getZoneWithPrototype();
+    this._diag.debug(
+      "removing patch from",
+      this.moduleName,
+      this.version,
+      "zone:",
+      !!ZoneWithPrototype
+    );
+    if (ZoneWithPrototype && this._zonePatched) {
+      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.runTask)) {
+        this._unwrap(ZoneWithPrototype.prototype, "runTask");
+      }
+      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.scheduleTask)) {
+        this._unwrap(ZoneWithPrototype.prototype, "scheduleTask");
+      }
+      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.cancelTask)) {
+        this._unwrap(ZoneWithPrototype.prototype, "cancelTask");
+      }
+    } else {
+      const targets = this._getPatchableEventTargets();
+      targets.forEach((target) => {
+        if ((0, import_instrumentation.isWrapped)(target.addEventListener)) {
+          this._unwrap(target, "addEventListener");
+        }
+        if ((0, import_instrumentation.isWrapped)(target.removeEventListener)) {
+          this._unwrap(target, "removeEventListener");
+        }
+      });
+    }
+    this._unpatchHistoryApi();
+  }
+  /**
+   * returns Zone
+   */
+  getZoneWithPrototype() {
+    const _window = window;
+    return _window.Zone;
+  }
+};
+
 // src/instrument.ts
 function defaultInstrumentConfig() {
+  if (typeof process === "undefined") {
+    global.process = { env: {} };
+  }
+  if (typeof process.env === "undefined") {
+    global.process.env = {};
+  }
   return {
     baseUrl: process.env.IUDEX_EXPORTER_OTLP_ENDPOINT || process.env.OTEL_EXPORTER_OTLP_ENDPOINT || "https://api.iudex.ai",
     iudexApiKey: process.env.IUDEX_API_KEY,
@@ -455,7 +1204,8 @@ function defaultInstrumentConfig() {
     githubUrl: process.env.GITHUB_URL,
     env: process.env.NODE_ENV,
     headers: {},
-    settings: {}
+    settings: {},
+    otelConfig: {}
   };
 }
 __name(defaultInstrumentConfig, "defaultInstrumentConfig");
@@ -471,7 +1221,8 @@ function instrument(instrumentConfig = {}) {
     githubUrl,
     env,
     headers: configHeaders,
-    settings
+    settings,
+    otelConfig
   } = { ...defaultInstrumentConfig(), ...instrumentConfig };
   if (!publicWriteOnlyIudexApiKey && !iudexApiKey) {
     console.warn(
@@ -479,32 +1230,45 @@ function instrument(instrumentConfig = {}) {
     );
     return;
   }
+  let url = baseUrl;
+  if (url == null || url === "undefined" || url === "null") {
+    url = "https://api.iudex.ai";
+  }
   const headers = buildHeaders({ iudexApiKey, publicWriteOnlyIudexApiKey, headers: configHeaders });
   const resource = buildResource({ serviceName, instanceId, gitCommit, githubUrl, env });
-  const logExporter = new import_exporter_logs_otlp_proto.OTLPLogExporter({ url: baseUrl + "/v1/logs", headers });
-  const logRecordProcessor = new import_sdk_logs.SimpleLogRecordProcessor(logExporter);
-  const loggerProvider = new import_sdk_logs.LoggerProvider({ resource });
+  const logExporter = new import_exporter_logs_otlp_proto.OTLPLogExporter({ url: url + "/v1/logs", headers });
+  const logRecordProcessor = new import_sdk_logs2.SimpleLogRecordProcessor(logExporter);
+  const loggerProvider = new LoggerProvider({ resource });
   loggerProvider.addLogRecordProcessor(logRecordProcessor);
-  import_api_logs2.logs.setGlobalLoggerProvider(loggerProvider);
-  const traceExporter = new import_exporter_trace_otlp_http.OTLPTraceExporter({ url: baseUrl + "/v1/traces", headers });
-  const spanProcessor = new import_sdk_trace_base.SimpleSpanProcessor(traceExporter);
-  const provider = new import_sdk_trace_web.WebTracerProvider();
+  import_api_logs3.logs.setGlobalLoggerProvider(loggerProvider);
+  const traceExporter = new import_exporter_trace_otlp_http.OTLPTraceExporter({ url: url + "/v1/traces", headers });
+  const spanProcessor = settings.emitToConsole ? new import_sdk_trace_base.SimpleSpanProcessor(new import_sdk_trace_base.ConsoleSpanExporter()) : new import_sdk_trace_base.BatchSpanProcessor(traceExporter);
+  const provider = new import_sdk_trace_web2.WebTracerProvider({ resource });
   provider.addSpanProcessor(spanProcessor);
   provider.register({
-    contextManager: new import_context_zone.ZoneContextManager(),
-    propagator: new import_propagator_b3.B3Propagator()
+    contextManager: new import_context_zone.ZoneContextManager()
   });
   const instrumentationConfigMap = {};
   if (!settings.instrumentWindow || settings.instrumentWindow != void 0) {
     instrumentationConfigMap["@opentelemetry/instrumentation-user-interaction"] = { enabled: false };
     instrumentationConfigMap["@opentelemetry/instrumentation-document-load"] = { enabled: false };
   }
+  if (!settings.instrumentFetch || settings.instrumentFetch == void 0) {
+    instrumentationConfigMap["@opentelemetry/instrumentation-fetch"] = { enabled: false };
+  }
   if (!settings.instrumentXhr || settings.instrumentXhr != void 0) {
     instrumentationConfigMap["@opentelemetry/instrumentation-xml-http-request"] = { enabled: false };
   }
-  (0, import_instrumentation.registerInstrumentations)({
-    instrumentations: [(0, import_auto_instrumentations_web.getWebAutoInstrumentations)(instrumentationConfigMap)]
-  });
+  const instrumentations = [
+    // Not really using any instrumentation in here right now
+    // getWebAutoInstrumentations(otelConfig || instrumentationConfigMap),
+  ];
+  if (typeof window !== "undefined") {
+    instrumentations.push(new UserInteractionInstrumentation(
+      otelConfig["@opentelemetry/instrumentation-user-interaction"]
+    ));
+  }
+  (0, import_instrumentation2.registerInstrumentations)({ instrumentations });
   if (settings.instrumentConsole || settings.instrumentConsole == void 0) {
     instrumentConsole();
   }
@@ -516,7 +1280,7 @@ function buildHeaders(instrumentConfig) {
     iudexApiKey,
     publicWriteOnlyIudexApiKey,
     headers: configHeaders
-  } = { ...defaultInstrumentConfig, ...instrumentConfig };
+  } = { ...defaultInstrumentConfig(), ...instrumentConfig };
   const headers = { ...configHeaders };
   if (publicWriteOnlyIudexApiKey) {
     headers["x-write-only-api-key"] = publicWriteOnlyIudexApiKey;
@@ -534,8 +1298,8 @@ function buildResource(instrumentConfig) {
     gitCommit,
     githubUrl,
     env
-  } = { ...defaultInstrumentConfig, ...instrumentConfig };
-  return new import_resources.Resource(import_lodash2.default.omitBy({
+  } = { ...defaultInstrumentConfig(), ...instrumentConfig };
+  return new import_resources2.Resource(import_lodash2.default.omitBy({
     [import_semantic_conventions2.SEMRESATTRS_SERVICE_NAME]: serviceName,
     [import_semantic_conventions2.SEMRESATTRS_SERVICE_INSTANCE_ID]: instanceId,
     "git.commit": gitCommit,
@@ -544,26 +1308,16 @@ function buildResource(instrumentConfig) {
   }, import_lodash2.default.isNil));
 }
 __name(buildResource, "buildResource");
-function lazyObj(instantiator) {
-  let inst;
-  return new Proxy({}, {
-    get(target, prop, reciever) {
-      if (inst == void 0) {
-        inst = instantiator();
-      }
-      reciever.get = (target2, prop2) => target2[prop2];
-      return inst[prop];
-    }
-  });
-}
-__name(lazyObj, "lazyObj");
 
 // src/vercel.ts
+var import_resources3 = require("@opentelemetry/resources");
 var import_exporter_logs_otlp_proto2 = require("@opentelemetry/exporter-logs-otlp-proto");
-var import_sdk_logs2 = require("@opentelemetry/sdk-logs");
+var import_sdk_logs3 = require("@opentelemetry/sdk-logs");
 var import_exporter_trace_otlp_http2 = require("@opentelemetry/exporter-trace-otlp-http");
-var import_sdk_trace_base2 = require("@opentelemetry/sdk-trace-base");
+var import_api_logs4 = require("@opentelemetry/api-logs");
+var import_lodash3 = __toESM(require("lodash"));
 function registerOTelOptions(optionsOrServiceName) {
+  if (!globalThis.XMLHttpRequest) globalThis.XMLHttpRequest = XMLHttpRequest;
   const options = typeof optionsOrServiceName === "string" ? { serviceName: optionsOrServiceName } : optionsOrServiceName || {};
   const {
     baseUrl,
@@ -571,38 +1325,61 @@ function registerOTelOptions(optionsOrServiceName) {
     publicWriteOnlyIudexApiKey,
     headers: configHeaders
   } = { ...defaultInstrumentConfig, ...options };
+  let url = baseUrl;
+  if (url == null || url === "undefined" || url === "null" || url === "") {
+    url = "https://api.iudex.ai";
+  }
   const headers = buildHeaders({ iudexApiKey, publicWriteOnlyIudexApiKey, headers: configHeaders });
   const logExporter = new import_exporter_logs_otlp_proto2.OTLPLogExporter({ url: baseUrl + "/v1/logs", headers });
-  const logRecordProcessor = new import_sdk_logs2.SimpleLogRecordProcessor(logExporter);
-  const traceExporter = new import_exporter_trace_otlp_http2.OTLPTraceExporter({ url: baseUrl + "/v1/traces", headers });
-  const spanProcessor = new import_sdk_trace_base2.SimpleSpanProcessor(traceExporter);
-  const resource = buildResource(options);
+  const logRecordProcessor = new import_sdk_logs3.SimpleLogRecordProcessor(logExporter);
+  const traceExporter = new import_exporter_trace_otlp_http2.OTLPTraceExporter({ url: url + "/v1/traces", headers });
+  let resource = buildResource(options);
+  resource = buildVercelResource();
+  const resourceDetectors = [import_resources3.envDetectorSync];
+  const internalConfig = { detectors: resourceDetectors };
+  resource = resource.merge((0, import_resources3.detectResourcesSync)(internalConfig));
+  const loggerProvider = new LoggerProvider({ resource });
+  loggerProvider.addLogRecordProcessor(logRecordProcessor);
+  import_api_logs4.logs.setGlobalLoggerProvider(loggerProvider);
+  options.traceExporter = traceExporter;
   options.attributes = resource.attributes;
-  if (!options.logRecordProcessor) {
-    options.logRecordProcessor = logRecordProcessor;
-  }
-  if (!options.spanProcessors) {
-    options.spanProcessors = [spanProcessor];
-  } else {
-    options.spanProcessors.push(spanProcessor);
-  }
   const settings = options.settings || {};
   if (settings.instrumentConsole || settings.instrumentConsole == void 0) {
-    instrumentConsole();
   }
   config.isInstrumented = true;
   return options;
 }
 __name(registerOTelOptions, "registerOTelOptions");
+function buildVercelResource() {
+  const resource = new import_resources3.Resource(
+    import_lodash3.default.omitBy({
+      // Node.
+      "node.ci": process.env.CI ? true : void 0,
+      "node.env": process.env.NODE_ENV,
+      // Vercel.
+      // https://vercel.com/docs/projects/environment-variables/system-environment-variables
+      // Vercel Env set as top level attribute for simplicity.
+      // One of 'production', 'preview' or 'development'.
+      "env": process.env.VERCEL_ENV || process.env.NEXT_PUBLIC_VERCEL_ENV,
+      "vercel.region": process.env.VERCEL_REGION,
+      "vercel.runtime": process.env.NEXT_RUNTIME || "nodejs",
+      "vercel.sha": process.env.VERCEL_GIT_COMMIT_SHA || process.env.NEXT_PUBLIC_VERCEL_GIT_COMMIT_SHA,
+      "vercel.host": process.env.VERCEL_URL || process.env.NEXT_PUBLIC_VERCEL_URL || void 0,
+      "vercel.branch_host": process.env.VERCEL_BRANCH_URL || process.env.NEXT_PUBLIC_VERCEL_BRANCH_URL || void 0
+    }, import_lodash3.default.isNil)
+  );
+  return resource;
+}
+__name(buildVercelResource, "buildVercelResource");
 
 // src/cloudflare-worker.ts
 var cloudflare_worker_exports = {};
 __export(cloudflare_worker_exports, {
-  trace: () => trace2,
+  trace: () => trace3,
   withTracing: () => withTracing2,
   workersConfigSettings: () => workersConfigSettings
 });
-var import_lodash3 = __toESM(require("lodash"));
+var import_lodash4 = __toESM(require("lodash"));
 var workersConfigSettings = { instrumentWindow: false, instrumentXhr: false };
 function withTracing2(fn, ctx = {}, config2 = {}) {
   if (!globalThis.XMLHttpRequest) globalThis.XMLHttpRequest = XMLHttpRequest;
@@ -617,8 +1394,8 @@ function withTracing2(fn, ctx = {}, config2 = {}) {
   return withTracing(fn, ctx);
 }
 __name(withTracing2, "withTracing");
-function trace2(exportedHandler, ctx, config2 = {}) {
-  return import_lodash3.default.mapValues(exportedHandler, (handler, key) => {
+function trace3(exportedHandler, ctx, config2 = {}) {
+  return import_lodash4.default.mapValues(exportedHandler, (handler, key) => {
     if (!handler) return;
     return withTracing2(
       handler,
@@ -627,11 +1404,11 @@ function trace2(exportedHandler, ctx, config2 = {}) {
     );
   });
 }
-__name(trace2, "trace");
+__name(trace3, "trace");
 
 // src/index.ts
 function trackAttribute(key, value) {
-  const activeSpan = import_api2.trace.getActiveSpan();
+  const activeSpan = import_api3.trace.getActiveSpan();
   activeSpan?.setAttribute(key, value);
 }
 __name(trackAttribute, "trackAttribute");
@@ -651,7 +1428,6 @@ __name(trackAttribute, "trackAttribute");
   instrument,
   iudexCloudflare,
   iudexConsole,
-  lazyObj,
   nativeConsole,
   registerOTelOptions,
   trackAttribute,
