@@ -7,7 +7,7 @@ Next generation observability. For Node compatible IUDEX, use [iudex-node](https
     - [Table of contents](#table-of-contents)
 - [Getting Started](#getting-started)
     - [NextJS](#nextjs)
-    - [CRA](#cra)
+    - [Create React App (CRA)](#create-react-app-cra)
     - [Autoinstrument](#autoinstrument)
     - [Cloudflare Workers](#cloudflare-workers)
     - [Console](#console)
@@ -46,16 +46,16 @@ We will follow the first half of [NextJS's OpenTelemetry Guide](https://nextjs.o
 1. Add `experimental.instrumentationHook = true`; in your `next.config.js`
 2. Install vercel otel and iudex-web `npm install @vercel/otel iudex-web`
 3. Create a file `instrumentation.ts` in your project source root (or `src` if you're using one).
-4. Add this to `instrumentaiton.ts`
+4. Add this to `instrumentation.ts`
 ```typescript
 import { registerOTel } from '@vercel/otel';
 import { registerOTelOptions } from 'iudex-web';
 
 export function register() {
   const options = registerOTelOptions({
-    serviceName: <name_of_your_nextjs_app>, // highly encouraged
-    env: <your_environment>, // optional
-    publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here>
+    serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
+    env: 'prod', // dev, local, etc
+    publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
   });
   registerOTel(options);
 }
@@ -63,15 +63,15 @@ export function register() {
 5. Go to [https://app.iudex.ai/traces](https://app.iudex.ai/traces) to view your NextJS traces.
 
 
-### CRA
+### Create React App (CRA)
 
 1. Add this code to the top your entrypoint file (likely `index.ts`).
 ```typescript
 import { instrument } from 'iudex-web';
 instrument({
-  serviceName: <your_service_name>, // highly encouraged
-  env: <your_environment>, // optional
-  publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here> // only commit your WRITE ONLY key in code
+  serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
+  env: 'prod', // dev, local, etc
+  publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
 });
 
 console.log('Hello Iudex!'); // Test logging
@@ -93,16 +93,16 @@ Add this code to the top your entrypoint file (likely `index.ts`).
 ```typescript
 import { instrument } from 'iudex-web';
 instrument({
-  serviceName: <your_service_name>, // highly encouraged
-  env: <your_environment>, // optional
-  publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here> // only commit your WRITE ONLY key in code
+  serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
+  env: 'prod', // dev, local, etc
+  publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
 });
 ```
 You should be all set! IUDEX will now record logs and trace the entire life cycle for each request.
 
 Go to [https://app.iudex.ai/](https://app.iudex.ai/) to start viewing your logs and traces!
 
-For libraries that are not autoinstrumented or if your project uses `"type": "module"`, follow the instructions from the table of contents for that specific library.
+For libraries that are not autoinstrumented or if your project uses `'type': 'module'`, follow the instructions from the table of contents for that specific library.
 
 
 ###  Cloudflare Workers
@@ -111,9 +111,9 @@ Cloudflare workers operate differently than the browser environment due to how t
 ```typescript
 import { instrument, iudexCloudflare } from 'iudex-web';
 instrument({
-  serviceName: <your_service_name>, // highly encouraged
-  env: <your_environment>, // optional
-  publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here> // only commit your WRITE ONLY key in code
+  serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
+  env: 'prod', // dev, local, etc
+  publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
 });
 const { trace, withTracing } = iudexCloudflare;
 import { ExportedHandler } from '@cloudflare/workers-types';
@@ -130,9 +130,9 @@ If you only want to trace specific ExportHandler functions, you can wrap the spe
 ```typescript
 import { instrument, iudexCloudflare } from 'iudex-web';
 instrument({
-  serviceName: <your_service_name>, // highly encouraged
-  env: <your_environment>, // optional
-  publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here> // only commit your WRITE ONLY key in code
+  serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
+  env: 'prod', // dev, local, etc
+  publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
 });
 const { trace, withTracing } = iudexCloudflare;
 import { ExportedHandler, ExportedHandlerFetchHandler } from '@cloudflare/workers-types';
@@ -151,9 +151,9 @@ Add this code snippet to the top your entry point file (likely `index.ts`). Skip
 ```typescript
 import { instrument, iudexFastify } from 'iudex-web';
 instrument({
-  serviceName: <your_service_name>, // highly encouraged
-  env: <your_environment>, // optional
-  publicWriteOnlyIudexApiKey: <your_PUBLIC_WRITE_ONLY_key_goes_here> // only commit your WRITE ONLY key in code
+  serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
+  env: 'prod', // dev, local, etc
+  publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
 });
 ```
 
@@ -183,9 +183,11 @@ function createLogger(level: keyof typeof console) {
 
 
 ### Tracing functions
-Its recommended that you trace functions that are not called extremely frequently and that tends to be an "entry point" for complex functionality. Examples of this are API routes, service controllers, and database clients. You can trace your function by wrapping it with `withTracing`.
+Its recommended that you trace functions that are not called extremely frequently and that tends to be an 'entry point' for complex functionality. Examples of this are API routes, service controllers, and database clients. You can trace your function by wrapping it with `withTracing`.
 
 ```typescript
+import { withTracing } from 'iudex-web';
+
 const myFunction = withTracing(async () => {
   console.log('I am traced');
 }, { name: 'myFunction', trackArgs: true });
@@ -283,6 +285,8 @@ logger library, find its instrumentation instructions or manually call `emitOtel
 
 #### Example
 ```typescript
+import { withTracing } from 'iudex-web';
+
 const myFunction = withTracing(async () => {
   console.log('I am traced');
 }, { name: 'myFunction' });
@@ -311,7 +315,9 @@ await myFunction();
 
 #### Example
 ```typescript
-await withTracing(async () => {
+import { useTracing } from 'iudex-web';
+
+await useTracing(async () => {
   console.log('I am traced');
 }, { name: 'myFunction' });
 // console: I am traced
