@@ -1,3 +1,6 @@
+import { LoggerProvider } from '@opentelemetry/api-logs';
+import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base';
+import { Resource } from '@opentelemetry/resources';
 export declare const config: {
     isInstrumented: boolean;
     nativeConsole: typeof console;
@@ -5,6 +8,9 @@ export declare const config: {
     workerEvent?: {
         waitUntil(f: Promise<any>): void;
     };
+    loggerProvider?: LoggerProvider;
+    tracerProvider?: BasicTracerProvider;
+    resource?: Resource;
 };
 export declare const nativeConsole: Console;
 export declare function convertSeverityTextToNumber(severityText: string | undefined): 1 | 5 | 9 | 13 | 17 | 21 | undefined;

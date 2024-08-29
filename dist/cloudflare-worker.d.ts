@@ -3,7 +3,8 @@ import { TraceCtx } from './trace.js';
 import { InstrumentConfig } from './instrument.js';
 type Handler<Env, QueueHandlerMessage, CfHostMetadata> = NonNullable<ExportedHandlerFetchHandler<Env, CfHostMetadata> | ExportedHandlerTailHandler<Env> | ExportedHandlerTraceHandler<Env> | ExportedHandlerScheduledHandler<Env> | ExportedHandlerTestHandler<Env> | EmailExportedHandler<Env> | ExportedHandlerQueueHandler<Env, QueueHandlerMessage>>;
 export declare const workersConfigSettings: {
-    instrumentWindow: boolean;
+    instrumentUserInteraction: boolean;
+    instrumentDocumentLoad: boolean;
     instrumentXhr: boolean;
 };
 export declare function withTracing<Env extends {

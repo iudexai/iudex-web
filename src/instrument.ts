@@ -1,35 +1,35 @@
-
+import { InstrumentationConfigMap } from '@opentelemetry/auto-instrumentations-web';
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { Instrumentation, registerInstrumentations } from '@opentelemetry/instrumentation';
+import { DocumentLoadInstrumentation } from '@opentelemetry/instrumentation-document-load';
+import { FetchInstrumentation } from '@opentelemetry/instrumentation-fetch';
+import { XMLHttpRequestInstrumentation } from '@opentelemetry/instrumentation-xml-http-request';
+import { Resource } from '@opentelemetry/resources';
+import {
+  LogRecord,
+  SimpleLogRecordProcessor,
+} from '@opentelemetry/sdk-logs';
 import {
   BatchSpanProcessor,
   ConsoleSpanExporter,
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
-import {
-  SimpleLogRecordProcessor,
-} from '@opentelemetry/sdk-logs';
-import { Resource } from '@opentelemetry/resources';
-import { logs } from '@opentelemetry/api-logs';
-import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto';
-import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { WebTracerProvider } from '@opentelemetry/sdk-trace-web';
-import { ZoneContextManager } from '@opentelemetry/context-zone';
-import { Instrumentation, registerInstrumentations } from '@opentelemetry/instrumentation';
-import {
-  InstrumentationConfigMap,
-  getWebAutoInstrumentations,
-} from '@opentelemetry/auto-instrumentations-web';
 import {
   SEMRESATTRS_SERVICE_INSTANCE_ID,
   SEMRESATTRS_SERVICE_NAME,
 } from '@opentelemetry/semantic-conventions';
 import _ from 'lodash';
 
-import { config } from './utils.js';
 import { instrumentConsole } from './instrumentations/console-instrumentation.js';
-import { LoggerProvider } from './opentelemetry/logger-provider.js';
 import {
   UserInteractionInstrumentation,
 } from './instrumentations/user-interaction-instrumentation.js';
+import { LoggerProvider } from './opentelemetry/logger-provider.js';
+import { RedactLogProcessor } from './opentelemetry/redact-log-processor.js';
+import { patchXmlHttpRequestWithCredentials } from './patches/patch-xmlhttprequest.js';
+import { config, XMLHttpRequest } from './utils.js';
 
 
 export type InstrumentConfig = {
@@ -42,14 +42,18 @@ export type InstrumentConfig = {
   githubUrl?: string;
   env?: string;
   headers?: Record<string, string>;
+  withCredentials?: boolean;
   settings?: {
     instrumentConsole?: boolean,
-    instrumentWindow?: boolean,
     instrumentXhr?: boolean,
     instrumentFetch?: boolean,
+    instrumentUserInteraction?: boolean,
+    instrumentDocumentLoad?: boolean,
     emitToConsole?: boolean,
+    debugMode?: boolean,
   };
   otelConfig?: InstrumentationConfigMap;
+  redact?: RegExp | string | ((logRecord: LogRecord) => void);
 };
 
 
@@ -64,16 +68,17 @@ export function defaultInstrumentConfig() {
 
   return {
     baseUrl: process.env.IUDEX_EXPORTER_OTLP_ENDPOINT
-    || process.env.OTEL_EXPORTER_OTLP_ENDPOINT
-    || 'https://api.iudex.ai',
+      || process.env.OTEL_EXPORTER_OTLP_ENDPOINT
+      || 'https://api.iudex.ai',
     iudexApiKey: process.env.IUDEX_API_KEY,
     publicWriteOnlyIudexApiKey: process.env.PUBLIC_WRITE_ONLY_IUDEX_API_KEY
-    || process.env.NEXT_PUBLIC_WRITE_ONLY_IUDEX_API_KEY,
+      || process.env.NEXT_PUBLIC_WRITE_ONLY_IUDEX_API_KEY,
     serviceName: process.env.OTEL_SERVICE_NAME || 'unknown-service',
     gitCommit: process.env.GIT_COMMIT,
     githubUrl: process.env.GITHUB_URL,
     env: process.env.NODE_ENV,
     headers: {},
+    withCredentials: false,
     settings: {},
     otelConfig: {},
   } satisfies InstrumentConfig;
@@ -81,6 +86,7 @@ export function defaultInstrumentConfig() {
 
 export function instrument(instrumentConfig: InstrumentConfig = {}) {
   if (config.isInstrumented) return;
+  if (!globalThis.XMLHttpRequest) (globalThis as any).XMLHttpRequest = XMLHttpRequest;
 
   const {
     baseUrl,
@@ -92,8 +98,10 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
     githubUrl,
     env,
     headers: configHeaders,
+    withCredentials,
     settings,
     otelConfig,
+    redact,
   }: InstrumentConfig = { ...defaultInstrumentConfig(), ...instrumentConfig };
   if (!publicWriteOnlyIudexApiKey && !iudexApiKey) {
     console.warn(
@@ -112,13 +120,21 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
 
   const headers = buildHeaders({ iudexApiKey, publicWriteOnlyIudexApiKey, headers: configHeaders });
   const resource = buildResource({ serviceName, instanceId, gitCommit, githubUrl, env });
+  config.resource = resource;
 
   // Configure logger
+  const loggerProvider = new LoggerProvider({ resource });
   const logExporter = new OTLPLogExporter({ url: url + '/v1/logs', headers });
   const logRecordProcessor = new SimpleLogRecordProcessor(logExporter);
-  const loggerProvider = new LoggerProvider({ resource });
+  if (redact) {
+    const reactLogProcessor = new RedactLogProcessor(redact);
+    loggerProvider.addLogRecordProcessor(reactLogProcessor);
+  }
+  if (typeof window !== 'undefined') {
+    (window as any).loggerProvider = loggerProvider;
+  }
+  config.loggerProvider = loggerProvider;
   loggerProvider.addLogRecordProcessor(logRecordProcessor);
-  logs.setGlobalLoggerProvider(loggerProvider);
 
   // Configure tracer
   const traceExporter = new OTLPTraceExporter({ url: url + '/v1/traces', headers });
@@ -127,43 +143,58 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
     : new BatchSpanProcessor(traceExporter);
 
   // INSTRUMENT
-  const provider = new WebTracerProvider({ resource });
-  provider.addSpanProcessor(spanProcessor);
-  provider.register({
-    contextManager: new ZoneContextManager(),
-  });
-
-  const instrumentationConfigMap: InstrumentationConfigMap = {};
-
-  if (!settings.instrumentWindow || settings.instrumentWindow != undefined) {
-    instrumentationConfigMap['@opentelemetry/instrumentation-user-interaction']
-      = { enabled: false };
-    instrumentationConfigMap['@opentelemetry/instrumentation-document-load']
-      = { enabled: false };
-  }
-
-  // Default off
-  if (!settings.instrumentFetch || settings.instrumentFetch == undefined) {
-    instrumentationConfigMap['@opentelemetry/instrumentation-fetch']
-      = { enabled: false };
-  }
-
-
-  if (!settings.instrumentXhr || settings.instrumentXhr != undefined) {
-    instrumentationConfigMap['@opentelemetry/instrumentation-xml-http-request']
-      = { enabled: false };
-  }
-
-  const instrumentations: Instrumentation[] = [
-    // Not really using any instrumentation in here right now
-    // getWebAutoInstrumentations(otelConfig || instrumentationConfigMap),
-  ];
-
-  // User interaction instrumentation depends on window
+  const tracerProvider = new WebTracerProvider({ resource });
   if (typeof window !== 'undefined') {
-    instrumentations.push(new UserInteractionInstrumentation(
-      otelConfig['@opentelemetry/instrumentation-user-interaction'],
+    (window as any).tracerProvider = tracerProvider;
+  }
+  config.tracerProvider = tracerProvider;
+  tracerProvider.addSpanProcessor(spanProcessor);
+
+  // if (typeof window !== 'undefined' && !settings.disableZone) {
+  // Turn off because it causes so many problems and doesnt work on mobile
+  // Even if the code never runs, it causes syntax errors on mobile
+  // On web, it just causes issues with like, sentry
+  // provider.register({ contextManager: new ZoneContextManager() });
+  // }
+  tracerProvider.register();
+
+  const instrumentations: Instrumentation[] = [];
+
+  // Requires window to track user interaction
+  if (typeof window !== 'undefined'
+    && (settings.instrumentUserInteraction == null || settings.instrumentUserInteraction)
+  ) {
+    instrumentations.push(new UserInteractionInstrumentation({
+      eventNames: [...EVENT_NAMES, ...EVENT_NAMES.map((name) => `react-${name}`)] as any,
+      ...(otelConfig['@opentelemetry/instrumentation-user-interaction'] || {}),
+    }));
+  }
+
+  // Requires window to track document load
+  if (typeof window !== 'undefined'
+    && (settings.instrumentDocumentLoad == null || settings.instrumentDocumentLoad)
+  ) {
+    instrumentations.push(new DocumentLoadInstrumentation(
+      otelConfig['@opentelemetry/instrumentation-document-load'],
     ));
+  }
+
+  if (settings.instrumentFetch == null || settings.instrumentFetch) {
+    instrumentations.push(new FetchInstrumentation({
+      ignoreUrls: FETCH_IGNORE_URLS,
+      ...(otelConfig['@opentelemetry/instrumentation-fetch'] || {}),
+    }));
+  }
+
+  if (settings.instrumentXhr == null || settings.instrumentXhr) {
+    instrumentations.push(new XMLHttpRequestInstrumentation({
+      ignoreUrls: FETCH_IGNORE_URLS,
+      ...(otelConfig['@opentelemetry/instrumentation-xml-http-request'] || {}),
+    }));
+  }
+
+  if (settings.debugMode) {
+    console.log('Loaded instrumentations: ', instrumentations);
   }
 
   // Registering instrumentations
@@ -173,6 +204,9 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
   if (settings.instrumentConsole || settings.instrumentConsole == undefined) {
     instrumentConsole();
   }
+
+  // re-patch on top of otel's patch
+  patchXmlHttpRequestWithCredentials(url, withCredentials);
 
   // Set global flag
   config.isInstrumented = true;
@@ -223,3 +257,23 @@ export function buildResource(
     'env': env,
   }, _.isNil));
 }
+
+export const FETCH_IGNORE_URLS = [
+  /_next/,
+  /\/static\//,
+  /\/public\//,
+  /logr-ingest.com/,
+  /datadoghq.com/,
+  /sentry.io/,
+  /fullstory.com/,
+];
+
+export const EVENT_NAMES = [
+  'click',
+  'mousedown',
+  'mouseup',
+  'keydown',
+  'keyup',
+  'touchstart',
+  'touchend',
+];

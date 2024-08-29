@@ -54,8 +54,7 @@ import { registerOTelOptions } from 'iudex-web';
 export function register() {
   const options = registerOTelOptions({
     serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
-    env: 'prod', // dev, local, etc
-    publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
+      publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
   });
   registerOTel(options);
 }
@@ -70,7 +69,6 @@ export function register() {
 import { instrument } from 'iudex-web';
 instrument({
   serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
-  env: 'prod', // dev, local, etc
   publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
 });
 
@@ -94,7 +92,6 @@ Add this code to the top your entrypoint file (likely `index.ts`).
 import { instrument } from 'iudex-web';
 instrument({
   serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
-  env: 'prod', // dev, local, etc
   publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
 });
 ```
@@ -112,7 +109,6 @@ Cloudflare workers operate differently than the browser environment due to how t
 import { instrument, iudexCloudflare } from 'iudex-web';
 instrument({
   serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
-  env: 'prod', // dev, local, etc
   publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
 });
 const { trace, withTracing } = iudexCloudflare;
@@ -131,7 +127,6 @@ If you only want to trace specific ExportHandler functions, you can wrap the spe
 import { instrument, iudexCloudflare } from 'iudex-web';
 instrument({
   serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
-  env: 'prod', // dev, local, etc
   publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
 });
 const { trace, withTracing } = iudexCloudflare;
@@ -152,7 +147,6 @@ Add this code snippet to the top your entry point file (likely `index.ts`). Skip
 import { instrument, iudexFastify } from 'iudex-web';
 instrument({
   serviceName: 'YOUR_SERVICE_NAME', // highly encouraged
-  env: 'prod', // dev, local, etc
   publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', // only ever commit your WRITE ONLY key
 });
 ```

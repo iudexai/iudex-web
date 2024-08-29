@@ -3,20 +3,24 @@ import {
   SEMATTRS_CODE_FUNCTION,
   SEMATTRS_CODE_LINENO,
 } from '@opentelemetry/semantic-conventions';
-import { logs } from '@opentelemetry/api-logs';
+import { LoggerProvider, logs } from '@opentelemetry/api-logs';
+import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base';
 
 import _ from 'lodash';
+import { Resource } from '@opentelemetry/resources';
 
 export const config: {
   isInstrumented: boolean;
   nativeConsole: typeof console;
   nativeFetch: typeof fetch;
   workerEvent?: { waitUntil (f: Promise<any>): void };
+  loggerProvider?: LoggerProvider;
+  tracerProvider?: BasicTracerProvider;
+  resource?: Resource;
 } = {
   isInstrumented: false,
   nativeConsole: { ...console },
   nativeFetch: fetch.bind(globalThis),
-  workerEvent: undefined,
 };
 
 // Native console
@@ -168,7 +172,7 @@ export function emitOtelLog({
   }
 
   // TODO: cache named logger
-  const otelLogger = logs.getLogger('default');
+  const otelLogger = config.loggerProvider?.getLogger('default') || logs.getLogger('default');
   otelLogger.emit({
     severityNumber: severityNumber || convertSeverityTextToNumber(level.toUpperCase()),
     severityText: level.toUpperCase(),

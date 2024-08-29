@@ -25,7 +25,11 @@ type Handler<Env, QueueHandlerMessage, CfHostMetadata> = NonNullable<
   | ExportedHandlerQueueHandler<Env, QueueHandlerMessage>
 >;
 
-export const workersConfigSettings = { instrumentWindow: false, instrumentXhr: false };
+export const workersConfigSettings = {
+  instrumentUserInteraction: false,
+  instrumentDocumentLoad: false,
+  instrumentXhr: false,
+};
 
 export function withTracing<
   Env extends { IUDEX_API_KEY?: string } = { IUDEX_API_KEY?: string },
@@ -50,10 +54,16 @@ export function withTracing<
     utilConfig.workerEvent = ctx;
 
     // Set window and XHR instrumentations to false for workers
-    if (config.settings == null) config.settings = workersConfigSettings;
-    if (config.settings.instrumentWindow == null) config.settings.instrumentWindow = false;
-    if (config.settings.instrumentXhr == null) config.settings.instrumentXhr = false;
-    if (config.iudexApiKey == null) config.iudexApiKey = env.IUDEX_API_KEY;
+    if (config.settings == null)
+      config.settings = workersConfigSettings;
+    if (config.settings.instrumentUserInteraction == null)
+      config.settings.instrumentUserInteraction = false;
+    if (config.settings.instrumentDocumentLoad == null)
+      config.settings.instrumentDocumentLoad = false;
+    if (config.settings.instrumentXhr == null)
+      config.settings.instrumentXhr = false;
+    if (config.iudexApiKey == null)
+      config.iudexApiKey = env.IUDEX_API_KEY;
 
     instrument(config);
   };

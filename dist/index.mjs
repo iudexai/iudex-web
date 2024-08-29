@@ -19,8 +19,7 @@ import _ from "lodash";
 var config = {
   isInstrumented: false,
   nativeConsole: { ...console },
-  nativeFetch: fetch.bind(globalThis),
-  workerEvent: void 0
+  nativeFetch: fetch.bind(globalThis)
 };
 var nativeConsole = config.nativeConsole;
 function convertSeverityTextToNumber(severityText) {
@@ -114,7 +113,7 @@ function emitOtelLog({
       [SEMATTRS_CODE_FUNCTION]: caller
     });
   }
-  const otelLogger = logs.getLogger("default");
+  const otelLogger = config.loggerProvider?.getLogger("default") || logs.getLogger("default");
   otelLogger.emit({
     severityNumber: severityNumber || convertSeverityTextToNumber(level.toUpperCase()),
     severityText: level.toUpperCase(),
@@ -135,7 +134,7 @@ var Dispatch = class extends EventTarget {
     this.dispatchEvent(ev);
   }
 };
-var XMLHttpRequest = class extends Dispatch {
+var XMLHttpRequest2 = class extends Dispatch {
   static {
     __name(this, "XMLHttpRequest");
   }
@@ -341,21 +340,22 @@ function useTracing(fn, ctx = {}) {
 __name(useTracing, "useTracing");
 
 // src/instrument.ts
+import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { DocumentLoadInstrumentation } from "@opentelemetry/instrumentation-document-load";
+import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
+import { XMLHttpRequestInstrumentation } from "@opentelemetry/instrumentation-xml-http-request";
+import { Resource as Resource2 } from "@opentelemetry/resources";
+import {
+  SimpleLogRecordProcessor
+} from "@opentelemetry/sdk-logs";
 import {
   BatchSpanProcessor,
   ConsoleSpanExporter,
   SimpleSpanProcessor
 } from "@opentelemetry/sdk-trace-base";
-import {
-  SimpleLogRecordProcessor
-} from "@opentelemetry/sdk-logs";
-import { Resource as Resource2 } from "@opentelemetry/resources";
-import { logs as logs2 } from "@opentelemetry/api-logs";
-import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-proto";
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { WebTracerProvider } from "@opentelemetry/sdk-trace-web";
-import { ZoneContextManager } from "@opentelemetry/context-zone";
-import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import {
   SEMRESATTRS_SERVICE_INSTANCE_ID,
   SEMRESATTRS_SERVICE_NAME
@@ -410,204 +410,6 @@ function isObject(obj) {
   return typeof obj === "object" && !Array.isArray(obj) && obj !== null;
 }
 __name(isObject, "isObject");
-
-// src/opentelemetry/logger-provider.ts
-import { context, diag as diag2 } from "@opentelemetry/api";
-import { NOOP_LOGGER } from "@opentelemetry/api-logs";
-import { LogRecord } from "@opentelemetry/sdk-logs";
-import {
-  BindOnceFuture,
-  callWithTimeout,
-  DEFAULT_ATTRIBUTE_COUNT_LIMIT,
-  DEFAULT_ATTRIBUTE_VALUE_LENGTH_LIMIT,
-  getEnv,
-  getEnvWithoutDefaults
-} from "@opentelemetry/core";
-import {
-  LoggerProviderSharedState
-} from "@opentelemetry/sdk-logs/build/src/internal/LoggerProviderSharedState.js";
-import { Resource } from "@opentelemetry/resources";
-var DEFAULT_LOGGER_NAME = "unknown";
-var LoggerProvider = class {
-  static {
-    __name(this, "LoggerProvider");
-  }
-  _shutdownOnce;
-  _sharedState;
-  constructor(config2 = {}) {
-    const mergedConfig = merge(loadDefaultConfig(), config2);
-    const resource = Resource.default().merge(
-      mergedConfig.resource ?? Resource.empty()
-    );
-    this._sharedState = new LoggerProviderSharedState(
-      resource,
-      mergedConfig.forceFlushTimeoutMillis,
-      reconfigureLimits(mergedConfig.logRecordLimits)
-    );
-    this._shutdownOnce = new BindOnceFuture(this._shutdown, this);
-  }
-  /**
-   * Get a logger with the configuration of the LoggerProvider.
-   */
-  getLogger(name, version, options) {
-    if (this._shutdownOnce.isCalled) {
-      diag2.warn("A shutdown LoggerProvider cannot provide a Logger");
-      return NOOP_LOGGER;
-    }
-    if (!name) {
-      diag2.warn("Logger requested without instrumentation scope name.");
-    }
-    const loggerName = name || DEFAULT_LOGGER_NAME;
-    const key = `${loggerName}@${version || ""}:${options?.schemaUrl || ""}`;
-    if (!this._sharedState.loggers.has(key)) {
-      this._sharedState.loggers.set(
-        key,
-        new Logger(
-          { name: loggerName, version, schemaUrl: options?.schemaUrl },
-          this._sharedState
-        )
-      );
-    }
-    return this._sharedState.loggers.get(key);
-  }
-  /**
-   * Adds a new {@link LogRecordProcessor} to this logger.
-   * @param processor the new LogRecordProcessor to be added.
-   */
-  addLogRecordProcessor(processor) {
-    if (this._sharedState.registeredLogRecordProcessors.length === 0) {
-      this._sharedState.activeProcessor.shutdown().catch(
-        (err) => diag2.error(
-          "Error while trying to shutdown current log record processor",
-          err
-        )
-      );
-    }
-    this._sharedState.registeredLogRecordProcessors.push(processor);
-    this._sharedState.activeProcessor = new MultiLogRecordProcessor(
-      this._sharedState.registeredLogRecordProcessors,
-      this._sharedState.forceFlushTimeoutMillis
-    );
-  }
-  /**
-   * Notifies all registered LogRecordProcessor to flush any buffered data.
-   *
-   * Returns a promise which is resolved when all flushes are complete.
-   */
-  forceFlush() {
-    if (this._shutdownOnce.isCalled) {
-      diag2.warn("invalid attempt to force flush after LoggerProvider shutdown");
-      return this._shutdownOnce.promise;
-    }
-    return this._sharedState.activeProcessor.forceFlush();
-  }
-  /**
-   * Flush all buffered data and shut down the LoggerProvider and all registered
-   * LogRecordProcessor.
-   *
-   * Returns a promise which is resolved when all flushes are complete.
-   */
-  shutdown() {
-    if (this._shutdownOnce.isCalled) {
-      diag2.warn("shutdown may only be called once per LoggerProvider");
-      return this._shutdownOnce.promise;
-    }
-    return this._shutdownOnce.call();
-  }
-  _shutdown() {
-    return this._sharedState.activeProcessor.shutdown();
-  }
-};
-var MultiLogRecordProcessor = class {
-  constructor(processors, forceFlushTimeoutMillis) {
-    this.processors = processors;
-    this.forceFlushTimeoutMillis = forceFlushTimeoutMillis;
-  }
-  static {
-    __name(this, "MultiLogRecordProcessor");
-  }
-  async forceFlush() {
-    const timeout = this.forceFlushTimeoutMillis;
-    await Promise.all(
-      this.processors.map(
-        (processor) => callWithTimeout(processor.forceFlush(), timeout)
-      )
-    );
-  }
-  onEmit(logRecord, context3) {
-    this.processors.forEach((processors) => processors.onEmit(logRecord, context3));
-  }
-  async shutdown() {
-    await Promise.all(this.processors.map((processor) => processor.shutdown()));
-  }
-};
-function loadDefaultConfig() {
-  return {
-    forceFlushTimeoutMillis: 3e4,
-    logRecordLimits: {
-      attributeValueLengthLimit: getEnv().OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT,
-      attributeCountLimit: getEnv().OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT
-    },
-    includeTraceContext: true
-  };
-}
-__name(loadDefaultConfig, "loadDefaultConfig");
-function reconfigureLimits(logRecordLimits) {
-  const parsedEnvConfig = getEnvWithoutDefaults();
-  return {
-    attributeCountLimit: logRecordLimits.attributeCountLimit ?? parsedEnvConfig.OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT ?? parsedEnvConfig.OTEL_ATTRIBUTE_COUNT_LIMIT ?? DEFAULT_ATTRIBUTE_COUNT_LIMIT,
-    attributeValueLengthLimit: logRecordLimits.attributeValueLengthLimit ?? parsedEnvConfig.OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT ?? parsedEnvConfig.OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT ?? DEFAULT_ATTRIBUTE_VALUE_LENGTH_LIMIT
-  };
-}
-__name(reconfigureLimits, "reconfigureLimits");
-var Logger = class {
-  constructor(instrumentationScope, _sharedState) {
-    this.instrumentationScope = instrumentationScope;
-    this._sharedState = _sharedState;
-  }
-  static {
-    __name(this, "Logger");
-  }
-  emit(logRecord) {
-    const currentContext = logRecord.context || context.active();
-    const logRecordInstance = new LogRecord(
-      this._sharedState,
-      this.instrumentationScope,
-      {
-        context: currentContext,
-        ...logRecord
-      }
-    );
-    this._sharedState.activeProcessor.onEmit(logRecordInstance, currentContext);
-    logRecordInstance._makeReadonly();
-  }
-};
-function isObject2(item) {
-  return item && typeof item === "object" && !Array.isArray(item);
-}
-__name(isObject2, "isObject");
-function merge(target, source) {
-  let output = Object.assign({}, target);
-  if (isObject2(target) && isObject2(source)) {
-    Object.keys(source).forEach((key) => {
-      if (isObject2(source[key])) {
-        if (!(key in target)) {
-          Object.assign(output, { [key]: source[key] });
-        } else {
-          const targetVal = target[key];
-          const sourceVal = source[key];
-          if (isObject2(targetVal) && isObject2(sourceVal)) {
-            output[key] = merge(targetVal, sourceVal);
-          }
-        }
-      } else {
-        Object.assign(output, { [key]: source[key] });
-      }
-    });
-  }
-  return output;
-}
-__name(merge, "merge");
 
 // src/instrumentations/user-interaction-instrumentation.ts
 import {
@@ -688,6 +490,10 @@ var UserInteractionInstrumentation = class extends InstrumentationBase {
     }
     if (element.hasAttribute("disabled")) {
       return void 0;
+    }
+    const isReactEvent = eventName.startsWith("react-");
+    if (isReactEvent) {
+      eventName = eventName.split("react-", 2)[1];
     }
     if (!this._allowEventName(eventName)) {
       return void 0;
@@ -813,6 +619,75 @@ var UserInteractionInstrumentation = class extends InstrumentationBase {
    * This is done when zone is not available
    */
   _patchAddEventListener() {
+    const plugin = this;
+    return (original) => {
+      return /* @__PURE__ */ __name(function addEventListenerPatched(type, listener, useCapture) {
+        if (!listener) {
+          return original.call(this, type, listener, useCapture);
+        }
+        const once = useCapture && typeof useCapture === "object" && useCapture.once;
+        const patchedListener = /* @__PURE__ */ __name(function(...args) {
+          let parentSpan;
+          const event = args[0];
+          let target = event?.target;
+          if (event) {
+            parentSpan = plugin._eventsSpanMap.get(event);
+          }
+          if (once) {
+            plugin.removePatchedListener(this, type, listener);
+          }
+          const isReactEvent = event?.currentTarget?.tagName === "REACT";
+          if (isReactEvent && event?.currentTarget?.ownerDocument?.activeElement) {
+            target = event.currentTarget.ownerDocument.activeElement;
+          }
+          const span = plugin._createSpan(target, type, parentSpan);
+          if (span) {
+            if (event) {
+              plugin._eventsSpanMap.set(event, span);
+            }
+            if (isReactEvent && target) {
+              const fiberKey = Object.keys(target).find((k) => k.startsWith("__reactFiber$"));
+              if (fiberKey) {
+                const fiber = target[fiberKey];
+                if (fiber._debugSource) {
+                  const { fileName, lineNumber, columnNumber } = fiber._debugSource;
+                  columnNumber && span.setAttribute("code.column", columnNumber);
+                  fileName && span.setAttribute("code.filepath", fileName);
+                  lineNumber && span.setAttribute("code.lineno", lineNumber);
+                }
+                const fibs = getFiberTree(fiber);
+                const lineage = getReactRenderLineage(fibs);
+                const stackTrace = getReactRenderStackTrace(fibs);
+                span.setAttribute("code.stacktrace", stackTrace.slice(0, 10).join("\n"));
+                span.setAttribute("code.reacttrace", lineage.join("\n"));
+              }
+            }
+            try {
+              return api.context.with(
+                api.trace.setSpan(api.context.active(), span),
+                () => {
+                  const result = plugin._invokeListener(listener, this, args);
+                  return result;
+                }
+              );
+            } catch (e) {
+              const error = e;
+              span.setStatus({ code: api.SpanStatusCode.ERROR, message: error.message });
+              span.recordException(error);
+              emitOtelLog({ level: "ERROR", body: error.stack });
+              throw e;
+            } finally {
+              span.end();
+            }
+          } else {
+            return plugin._invokeListener(listener, this, args);
+          }
+        }, "patchedListener");
+        if (plugin.addPatchedListener(this, type, listener, patchedListener)) {
+          return original.call(this, type, patchedListener, useCapture);
+        }
+      }, "addEventListenerPatched");
+    };
   }
   /**
    * This patches the removeEventListener of HTMLElement to handle the fact that
@@ -820,6 +695,21 @@ var UserInteractionInstrumentation = class extends InstrumentationBase {
    * This is done when zone is not available
    */
   _patchRemoveEventListener() {
+    const plugin = this;
+    return (original) => {
+      return /* @__PURE__ */ __name(function removeEventListenerPatched(type, listener, useCapture) {
+        const wrappedListener = plugin.removePatchedListener(
+          this,
+          type,
+          listener
+        );
+        if (wrappedListener) {
+          return original.call(this, type, wrappedListener, useCapture);
+        } else {
+          return original.call(this, type, listener, useCapture);
+        }
+      }, "removeEventListenerPatched");
+    };
   }
   /**
    * Most browser provide event listener api via EventTarget in prototype chain.
@@ -1168,6 +1058,258 @@ var UserInteractionInstrumentation = class extends InstrumentationBase {
     return _window.Zone;
   }
 };
+function getFiberTree(fiber) {
+  return fiber ? [fiber, ...getFiberTree(fiber.return)] : [];
+}
+__name(getFiberTree, "getFiberTree");
+function getReactRenderLineage(fibers) {
+  return fibers.map((f) => {
+    if (typeof f.type === "string") return f.type;
+    if (f.type && typeof f.type === "function") return f.type.name;
+  }).filter((e) => e);
+}
+__name(getReactRenderLineage, "getReactRenderLineage");
+function getReactRenderStackTrace(fibers) {
+  return fibers.map((f) => f._debugSource).filter((e) => e).map((d) => `${d.fileName}:${d.lineNumber}:${d.columnNumber}`);
+}
+__name(getReactRenderStackTrace, "getReactRenderStackTrace");
+
+// src/opentelemetry/logger-provider.ts
+import { context as context2, diag as diag2 } from "@opentelemetry/api";
+import { NOOP_LOGGER } from "@opentelemetry/api-logs";
+import { LogRecord } from "@opentelemetry/sdk-logs";
+import {
+  BindOnceFuture,
+  callWithTimeout,
+  DEFAULT_ATTRIBUTE_COUNT_LIMIT,
+  DEFAULT_ATTRIBUTE_VALUE_LENGTH_LIMIT,
+  getEnv,
+  getEnvWithoutDefaults
+} from "@opentelemetry/core";
+import {
+  LoggerProviderSharedState
+} from "@opentelemetry/sdk-logs/build/src/internal/LoggerProviderSharedState.js";
+import { Resource } from "@opentelemetry/resources";
+var DEFAULT_LOGGER_NAME = "unknown";
+var LoggerProvider2 = class {
+  static {
+    __name(this, "LoggerProvider");
+  }
+  _shutdownOnce;
+  _sharedState;
+  constructor(config2 = {}) {
+    const mergedConfig = merge(loadDefaultConfig(), config2);
+    const resource = Resource.default().merge(
+      mergedConfig.resource ?? Resource.empty()
+    );
+    this._sharedState = new LoggerProviderSharedState(
+      resource,
+      mergedConfig.forceFlushTimeoutMillis,
+      reconfigureLimits(mergedConfig.logRecordLimits)
+    );
+    this._shutdownOnce = new BindOnceFuture(this._shutdown, this);
+  }
+  /**
+   * Get a logger with the configuration of the LoggerProvider.
+   */
+  getLogger(name, version, options) {
+    if (this._shutdownOnce.isCalled) {
+      diag2.warn("A shutdown LoggerProvider cannot provide a Logger");
+      return NOOP_LOGGER;
+    }
+    if (!name) {
+      diag2.warn("Logger requested without instrumentation scope name.");
+    }
+    const loggerName = name || DEFAULT_LOGGER_NAME;
+    const key = `${loggerName}@${version || ""}:${options?.schemaUrl || ""}`;
+    if (!this._sharedState.loggers.has(key)) {
+      this._sharedState.loggers.set(
+        key,
+        new Logger(
+          { name: loggerName, version, schemaUrl: options?.schemaUrl },
+          this._sharedState
+        )
+      );
+    }
+    return this._sharedState.loggers.get(key);
+  }
+  /**
+   * Adds a new {@link LogRecordProcessor} to this logger.
+   * @param processor the new LogRecordProcessor to be added.
+   */
+  addLogRecordProcessor(processor) {
+    if (this._sharedState.registeredLogRecordProcessors.length === 0) {
+      this._sharedState.activeProcessor.shutdown().catch(
+        (err) => diag2.error(
+          "Error while trying to shutdown current log record processor",
+          err
+        )
+      );
+    }
+    this._sharedState.registeredLogRecordProcessors.push(processor);
+    this._sharedState.activeProcessor = new MultiLogRecordProcessor(
+      this._sharedState.registeredLogRecordProcessors,
+      this._sharedState.forceFlushTimeoutMillis
+    );
+  }
+  /**
+   * Notifies all registered LogRecordProcessor to flush any buffered data.
+   *
+   * Returns a promise which is resolved when all flushes are complete.
+   */
+  forceFlush() {
+    if (this._shutdownOnce.isCalled) {
+      diag2.warn("invalid attempt to force flush after LoggerProvider shutdown");
+      return this._shutdownOnce.promise;
+    }
+    return this._sharedState.activeProcessor.forceFlush();
+  }
+  /**
+   * Flush all buffered data and shut down the LoggerProvider and all registered
+   * LogRecordProcessor.
+   *
+   * Returns a promise which is resolved when all flushes are complete.
+   */
+  shutdown() {
+    if (this._shutdownOnce.isCalled) {
+      diag2.warn("shutdown may only be called once per LoggerProvider");
+      return this._shutdownOnce.promise;
+    }
+    return this._shutdownOnce.call();
+  }
+  _shutdown() {
+    return this._sharedState.activeProcessor.shutdown();
+  }
+};
+var MultiLogRecordProcessor = class {
+  constructor(processors, forceFlushTimeoutMillis) {
+    this.processors = processors;
+    this.forceFlushTimeoutMillis = forceFlushTimeoutMillis;
+  }
+  static {
+    __name(this, "MultiLogRecordProcessor");
+  }
+  async forceFlush() {
+    const timeout = this.forceFlushTimeoutMillis;
+    await Promise.all(
+      this.processors.map(
+        (processor) => callWithTimeout(processor.forceFlush(), timeout)
+      )
+    );
+  }
+  onEmit(logRecord, context3) {
+    this.processors.forEach((processors) => processors.onEmit(logRecord, context3));
+  }
+  async shutdown() {
+    await Promise.all(this.processors.map((processor) => processor.shutdown()));
+  }
+};
+function loadDefaultConfig() {
+  return {
+    forceFlushTimeoutMillis: 3e4,
+    logRecordLimits: {
+      attributeValueLengthLimit: getEnv().OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT,
+      attributeCountLimit: getEnv().OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT
+    },
+    includeTraceContext: true
+  };
+}
+__name(loadDefaultConfig, "loadDefaultConfig");
+function reconfigureLimits(logRecordLimits) {
+  const parsedEnvConfig = getEnvWithoutDefaults();
+  return {
+    attributeCountLimit: logRecordLimits.attributeCountLimit ?? parsedEnvConfig.OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT ?? parsedEnvConfig.OTEL_ATTRIBUTE_COUNT_LIMIT ?? DEFAULT_ATTRIBUTE_COUNT_LIMIT,
+    attributeValueLengthLimit: logRecordLimits.attributeValueLengthLimit ?? parsedEnvConfig.OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT ?? parsedEnvConfig.OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT ?? DEFAULT_ATTRIBUTE_VALUE_LENGTH_LIMIT
+  };
+}
+__name(reconfigureLimits, "reconfigureLimits");
+var Logger = class {
+  constructor(instrumentationScope, _sharedState) {
+    this.instrumentationScope = instrumentationScope;
+    this._sharedState = _sharedState;
+  }
+  static {
+    __name(this, "Logger");
+  }
+  emit(logRecord) {
+    const currentContext = logRecord.context || context2.active();
+    const logRecordInstance = new LogRecord(
+      this._sharedState,
+      this.instrumentationScope,
+      {
+        context: currentContext,
+        ...logRecord
+      }
+    );
+    this._sharedState.activeProcessor.onEmit(logRecordInstance, currentContext);
+    logRecordInstance._makeReadonly();
+  }
+};
+function isObject2(item) {
+  return item && typeof item === "object" && !Array.isArray(item);
+}
+__name(isObject2, "isObject");
+function merge(target, source) {
+  let output = Object.assign({}, target);
+  if (isObject2(target) && isObject2(source)) {
+    Object.keys(source).forEach((key) => {
+      if (isObject2(source[key])) {
+        if (!(key in target)) {
+          Object.assign(output, { [key]: source[key] });
+        } else {
+          const targetVal = target[key];
+          const sourceVal = source[key];
+          if (isObject2(targetVal) && isObject2(sourceVal)) {
+            output[key] = merge(targetVal, sourceVal);
+          }
+        }
+      } else {
+        Object.assign(output, { [key]: source[key] });
+      }
+    });
+  }
+  return output;
+}
+__name(merge, "merge");
+
+// src/opentelemetry/redact-log-processor.ts
+var RedactLogProcessor = class {
+  constructor(redact) {
+    this.redact = redact;
+    this.redactFn = typeof redact === "function" ? redact : (logRecord) => {
+      if (typeof logRecord.body === "string") {
+        logRecord.setBody(logRecord.body.replace(redact, "REDACTED"));
+      }
+    };
+  }
+  static {
+    __name(this, "RedactLogProcessor");
+  }
+  redactFn;
+  onEmit(logRecord) {
+    this.redactFn(logRecord);
+  }
+  forceFlush() {
+    return Promise.resolve();
+  }
+  shutdown() {
+    return Promise.resolve();
+  }
+};
+
+// src/patches/patch-xmlhttprequest.ts
+function patchXmlHttpRequestWithCredentials(otelBaseUrl, withCredentials) {
+  const origOpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function(method, url, async = true, username, password) {
+    origOpen.call(this, method, url, async, username, password);
+    if (!withCredentials) return;
+    const urlString = typeof url === "string" ? url : url.toString();
+    if (urlString.includes(otelBaseUrl)) {
+      this.withCredentials = withCredentials;
+    }
+  };
+}
+__name(patchXmlHttpRequestWithCredentials, "patchXmlHttpRequestWithCredentials");
 
 // src/instrument.ts
 function defaultInstrumentConfig() {
@@ -1186,6 +1328,7 @@ function defaultInstrumentConfig() {
     githubUrl: process.env.GITHUB_URL,
     env: process.env.NODE_ENV,
     headers: {},
+    withCredentials: false,
     settings: {},
     otelConfig: {}
   };
@@ -1193,6 +1336,7 @@ function defaultInstrumentConfig() {
 __name(defaultInstrumentConfig, "defaultInstrumentConfig");
 function instrument(instrumentConfig = {}) {
   if (config.isInstrumented) return;
+  if (!globalThis.XMLHttpRequest) globalThis.XMLHttpRequest = XMLHttpRequest2;
   const {
     baseUrl,
     iudexApiKey,
@@ -1203,8 +1347,10 @@ function instrument(instrumentConfig = {}) {
     githubUrl,
     env,
     headers: configHeaders,
+    withCredentials,
     settings,
-    otelConfig
+    otelConfig,
+    redact
   } = { ...defaultInstrumentConfig(), ...instrumentConfig };
   if (!publicWriteOnlyIudexApiKey && !iudexApiKey) {
     console.warn(
@@ -1218,42 +1364,60 @@ function instrument(instrumentConfig = {}) {
   }
   const headers = buildHeaders({ iudexApiKey, publicWriteOnlyIudexApiKey, headers: configHeaders });
   const resource = buildResource({ serviceName, instanceId, gitCommit, githubUrl, env });
+  config.resource = resource;
+  const loggerProvider = new LoggerProvider2({ resource });
   const logExporter = new OTLPLogExporter({ url: url + "/v1/logs", headers });
   const logRecordProcessor = new SimpleLogRecordProcessor(logExporter);
-  const loggerProvider = new LoggerProvider({ resource });
+  if (redact) {
+    const reactLogProcessor = new RedactLogProcessor(redact);
+    loggerProvider.addLogRecordProcessor(reactLogProcessor);
+  }
+  if (typeof window !== "undefined") {
+    window.loggerProvider = loggerProvider;
+  }
+  config.loggerProvider = loggerProvider;
   loggerProvider.addLogRecordProcessor(logRecordProcessor);
-  logs2.setGlobalLoggerProvider(loggerProvider);
   const traceExporter = new OTLPTraceExporter({ url: url + "/v1/traces", headers });
   const spanProcessor = settings.emitToConsole ? new SimpleSpanProcessor(new ConsoleSpanExporter()) : new BatchSpanProcessor(traceExporter);
-  const provider = new WebTracerProvider({ resource });
-  provider.addSpanProcessor(spanProcessor);
-  provider.register({
-    contextManager: new ZoneContextManager()
-  });
-  const instrumentationConfigMap = {};
-  if (!settings.instrumentWindow || settings.instrumentWindow != void 0) {
-    instrumentationConfigMap["@opentelemetry/instrumentation-user-interaction"] = { enabled: false };
-    instrumentationConfigMap["@opentelemetry/instrumentation-document-load"] = { enabled: false };
-  }
-  if (!settings.instrumentFetch || settings.instrumentFetch == void 0) {
-    instrumentationConfigMap["@opentelemetry/instrumentation-fetch"] = { enabled: false };
-  }
-  if (!settings.instrumentXhr || settings.instrumentXhr != void 0) {
-    instrumentationConfigMap["@opentelemetry/instrumentation-xml-http-request"] = { enabled: false };
-  }
-  const instrumentations = [
-    // Not really using any instrumentation in here right now
-    // getWebAutoInstrumentations(otelConfig || instrumentationConfigMap),
-  ];
+  const tracerProvider = new WebTracerProvider({ resource });
   if (typeof window !== "undefined") {
-    instrumentations.push(new UserInteractionInstrumentation(
-      otelConfig["@opentelemetry/instrumentation-user-interaction"]
+    window.tracerProvider = tracerProvider;
+  }
+  config.tracerProvider = tracerProvider;
+  tracerProvider.addSpanProcessor(spanProcessor);
+  tracerProvider.register();
+  const instrumentations = [];
+  if (typeof window !== "undefined" && (settings.instrumentUserInteraction == null || settings.instrumentUserInteraction)) {
+    instrumentations.push(new UserInteractionInstrumentation({
+      eventNames: [...EVENT_NAMES, ...EVENT_NAMES.map((name) => `react-${name}`)],
+      ...otelConfig["@opentelemetry/instrumentation-user-interaction"] || {}
+    }));
+  }
+  if (typeof window !== "undefined" && (settings.instrumentDocumentLoad == null || settings.instrumentDocumentLoad)) {
+    instrumentations.push(new DocumentLoadInstrumentation(
+      otelConfig["@opentelemetry/instrumentation-document-load"]
     ));
+  }
+  if (settings.instrumentFetch == null || settings.instrumentFetch) {
+    instrumentations.push(new FetchInstrumentation({
+      ignoreUrls: FETCH_IGNORE_URLS,
+      ...otelConfig["@opentelemetry/instrumentation-fetch"] || {}
+    }));
+  }
+  if (settings.instrumentXhr == null || settings.instrumentXhr) {
+    instrumentations.push(new XMLHttpRequestInstrumentation({
+      ignoreUrls: FETCH_IGNORE_URLS,
+      ...otelConfig["@opentelemetry/instrumentation-xml-http-request"] || {}
+    }));
+  }
+  if (settings.debugMode) {
+    console.log("Loaded instrumentations: ", instrumentations);
   }
   registerInstrumentations({ instrumentations });
   if (settings.instrumentConsole || settings.instrumentConsole == void 0) {
     instrumentConsole();
   }
+  patchXmlHttpRequestWithCredentials(url, withCredentials);
   config.isInstrumented = true;
 }
 __name(instrument, "instrument");
@@ -1290,29 +1454,47 @@ function buildResource(instrumentConfig) {
   }, _2.isNil));
 }
 __name(buildResource, "buildResource");
+var FETCH_IGNORE_URLS = [
+  /_next/,
+  /\/static\//,
+  /\/public\//,
+  /logr-ingest.com/,
+  /datadoghq.com/,
+  /sentry.io/,
+  /fullstory.com/
+];
+var EVENT_NAMES = [
+  "click",
+  "mousedown",
+  "mouseup",
+  "keydown",
+  "keyup",
+  "touchstart",
+  "touchend"
+];
 
 // src/vercel.ts
 import { detectResourcesSync, envDetectorSync, Resource as Resource3 } from "@opentelemetry/resources";
 import { OTLPLogExporter as OTLPLogExporter2 } from "@opentelemetry/exporter-logs-otlp-proto";
 import { SimpleLogRecordProcessor as SimpleLogRecordProcessor2 } from "@opentelemetry/sdk-logs";
 import { OTLPTraceExporter as OTLPTraceExporter2 } from "@opentelemetry/exporter-trace-otlp-http";
-import { logs as logs3 } from "@opentelemetry/api-logs";
+import { logs as logs2 } from "@opentelemetry/api-logs";
 import _3 from "lodash";
 function registerOTelOptions(optionsOrServiceName) {
-  if (!globalThis.XMLHttpRequest) globalThis.XMLHttpRequest = XMLHttpRequest;
+  if (!globalThis.XMLHttpRequest) globalThis.XMLHttpRequest = XMLHttpRequest2;
   const options = typeof optionsOrServiceName === "string" ? { serviceName: optionsOrServiceName } : optionsOrServiceName || {};
   const {
     baseUrl,
     iudexApiKey,
     publicWriteOnlyIudexApiKey,
     headers: configHeaders
-  } = { ...defaultInstrumentConfig, ...options };
+  } = { ...defaultInstrumentConfig(), ...options };
   let url = baseUrl;
   if (url == null || url === "undefined" || url === "null" || url === "") {
     url = "https://api.iudex.ai";
   }
   const headers = buildHeaders({ iudexApiKey, publicWriteOnlyIudexApiKey, headers: configHeaders });
-  const logExporter = new OTLPLogExporter2({ url: baseUrl + "/v1/logs", headers });
+  const logExporter = new OTLPLogExporter2({ url: url + "/v1/logs", headers });
   const logRecordProcessor = new SimpleLogRecordProcessor2(logExporter);
   const traceExporter = new OTLPTraceExporter2({ url: url + "/v1/traces", headers });
   let resource = buildResource(options);
@@ -1320,9 +1502,9 @@ function registerOTelOptions(optionsOrServiceName) {
   const resourceDetectors = [envDetectorSync];
   const internalConfig = { detectors: resourceDetectors };
   resource = resource.merge(detectResourcesSync(internalConfig));
-  const loggerProvider = new LoggerProvider({ resource });
+  const loggerProvider = new LoggerProvider2({ resource });
   loggerProvider.addLogRecordProcessor(logRecordProcessor);
-  logs3.setGlobalLoggerProvider(loggerProvider);
+  logs2.setGlobalLoggerProvider(loggerProvider);
   options.traceExporter = traceExporter;
   options.attributes = resource.attributes;
   const settings = options.settings || {};
@@ -1362,15 +1544,25 @@ __export(cloudflare_worker_exports, {
   workersConfigSettings: () => workersConfigSettings
 });
 import _4 from "lodash";
-var workersConfigSettings = { instrumentWindow: false, instrumentXhr: false };
+var workersConfigSettings = {
+  instrumentUserInteraction: false,
+  instrumentDocumentLoad: false,
+  instrumentXhr: false
+};
 function withTracing2(fn, ctx = {}, config2 = {}) {
-  if (!globalThis.XMLHttpRequest) globalThis.XMLHttpRequest = XMLHttpRequest;
+  if (!globalThis.XMLHttpRequest) globalThis.XMLHttpRequest = XMLHttpRequest2;
   if (!ctx.beforeRun) ctx.beforeRun = (arg1, env, ctx2) => {
     config.workerEvent = ctx2;
-    if (config2.settings == null) config2.settings = workersConfigSettings;
-    if (config2.settings.instrumentWindow == null) config2.settings.instrumentWindow = false;
-    if (config2.settings.instrumentXhr == null) config2.settings.instrumentXhr = false;
-    if (config2.iudexApiKey == null) config2.iudexApiKey = env.IUDEX_API_KEY;
+    if (config2.settings == null)
+      config2.settings = workersConfigSettings;
+    if (config2.settings.instrumentUserInteraction == null)
+      config2.settings.instrumentUserInteraction = false;
+    if (config2.settings.instrumentDocumentLoad == null)
+      config2.settings.instrumentDocumentLoad = false;
+    if (config2.settings.instrumentXhr == null)
+      config2.settings.instrumentXhr = false;
+    if (config2.iudexApiKey == null)
+      config2.iudexApiKey = env.IUDEX_API_KEY;
     instrument(config2);
   };
   return withTracing(fn, ctx);
@@ -1394,9 +1586,23 @@ function trackAttribute(key, value) {
   activeSpan?.setAttribute(key, value);
 }
 __name(trackAttribute, "trackAttribute");
+function trackGlobalAttribute(key, value) {
+  const { loggerProvider, tracerProvider } = config;
+  const loggerAttrs = loggerProvider?._sharedState.resource?._attributes;
+  if (loggerAttrs) {
+    loggerAttrs[key] = value;
+  }
+  const tracerAttrs = tracerProvider?.resource?._attributes;
+  if (tracerAttrs) {
+    tracerAttrs[key] = value;
+  }
+}
+__name(trackGlobalAttribute, "trackGlobalAttribute");
 export {
   Dispatch,
-  XMLHttpRequest,
+  EVENT_NAMES,
+  FETCH_IGNORE_URLS,
+  XMLHttpRequest2 as XMLHttpRequest,
   buildHeaders,
   buildResource,
   config,
@@ -1412,6 +1618,7 @@ export {
   nativeConsole,
   registerOTelOptions,
   trackAttribute,
+  trackGlobalAttribute,
   useTracing,
   withTracing
 };

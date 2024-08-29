@@ -15,6 +15,7 @@ import { Span, HrTime } from '@opentelemetry/api';
 import { hrTime } from '@opentelemetry/core';
 import { getElementXPath } from '@opentelemetry/sdk-trace-web';
 import { emitOtelLog } from '../utils.js';
+import { get } from 'lodash';
 
 const PACKAGE_NAME = 'iudex-web/instrumentation-user-interaction';
 const PACKAGE_VERSION = '0.39.0';
@@ -191,6 +192,10 @@ export class UserInteractionInstrumentation
     if (element.hasAttribute('disabled')) {
       return undefined;
     }
+    const isReactEvent = eventName.startsWith('react-');
+    if (isReactEvent) {
+      eventName = eventName.split('react-', 2)[1] as EventName;
+    }
     if (!this._allowEventName(eventName)) {
       return undefined;
     }
@@ -340,6 +345,86 @@ export class UserInteractionInstrumentation
    * This is done when zone is not available
    */
   private _patchAddEventListener() {
+    const plugin = this;
+    return (original: EventTarget['addEventListener']) => {
+      return function addEventListenerPatched(
+        this: HTMLElement,
+        type: keyof HTMLElementEventMap,
+        listener: EventListenerOrEventListenerObject | null,
+        useCapture?: boolean | AddEventListenerOptions,
+      ) {
+        // Forward calls with listener = null
+        if (!listener) {
+          return original.call(this, type, listener, useCapture);
+        }
+
+        // filter out null (typeof null === 'object')
+        const once =
+          useCapture && typeof useCapture === 'object' && useCapture.once;
+        const patchedListener = function (this: HTMLElement, ...args: any[]) {
+          let parentSpan: api.Span | undefined;
+          const event: Event | undefined = args[0];
+          let target = event?.target;
+          if (event) {
+            parentSpan = plugin._eventsSpanMap.get(event);
+          }
+          if (once) {
+            plugin.removePatchedListener(this, type, listener);
+          }
+          const isReactEvent = (event?.currentTarget as any)?.tagName === 'REACT';
+          if (isReactEvent && (event?.currentTarget as any)?.ownerDocument?.activeElement) {
+            target = (event as any).currentTarget.ownerDocument.activeElement;
+          }
+          const span = plugin._createSpan(target, type, parentSpan);
+          if (span) {
+            if (event) {
+              plugin._eventsSpanMap.set(event, span);
+            }
+            if (isReactEvent && target) {
+              const fiberKey = Object.keys(target).find(k => k.startsWith('__reactFiber$'));
+              if (fiberKey) {
+                const fiber = (target as any)[fiberKey];
+                if (fiber._debugSource) {
+                  const { fileName, lineNumber, columnNumber } = fiber._debugSource;
+                  columnNumber && span.setAttribute('code.column', columnNumber);
+                  fileName && span.setAttribute('code.filepath', fileName);
+                  lineNumber && span.setAttribute('code.lineno', lineNumber);
+                }
+
+                const fibs = getFiberTree(fiber);
+                const lineage = getReactRenderLineage(fibs);
+                const stackTrace = getReactRenderStackTrace(fibs);
+                span.setAttribute('code.stacktrace', stackTrace.slice(0, 10).join('\n'));
+                span.setAttribute('code.reacttrace', lineage.join('\n'));
+              }
+            }
+            try {
+              return api.context.with(
+                api.trace.setSpan(api.context.active(), span),
+                () => {
+                  const result = plugin._invokeListener(listener, this, args);
+                  return result;
+                },
+              );
+            } catch (e) {
+              const error = e as Error;
+              span.setStatus({ code: api.SpanStatusCode.ERROR, message: error.message });
+              span.recordException(error);
+              emitOtelLog({ level: 'ERROR', body: error.stack });
+              throw e;
+            } finally {
+              // no zone so end span immediately
+              span.end();
+            }
+          } else {
+            return plugin._invokeListener(listener, this, args);
+          }
+        };
+        if (plugin.addPatchedListener(this, type, listener, patchedListener)) {
+          return original.call(this, type, patchedListener, useCapture);
+        }
+      };
+    };
   }
 
   /**
@@ -348,7 +433,28 @@ export class UserInteractionInstrumentation
    * This is done when zone is not available
    */
   private _patchRemoveEventListener() {
+    const plugin = this;
+    return (original: Function) => {
+      return function removeEventListenerPatched(
+        this: HTMLElement,
+        type: any,
+        listener: any,
+        useCapture: any,
+      ) {
+        const wrappedListener = plugin.removePatchedListener(
+          this,
+          type,
+          listener,
+        );
+        if (wrappedListener) {
+          return original.call(this, type, wrappedListener, useCapture);
+        } else {
+          return original.call(this, type, listener, useCapture);
+        }
+      };
+    };
   }
+
 
   /**
    * Most browser provide event listener api via EventTarget in prototype chain.
@@ -736,4 +842,24 @@ export class UserInteractionInstrumentation
     const _window: WindowWithZone = window as unknown as WindowWithZone;
     return _window.Zone;
   }
+}
+
+// List of fibers
+function getFiberTree(fiber: any): any[] {
+  return fiber ? [fiber, ...getFiberTree(fiber.return)] : [];
+}
+
+// Gets fiber component names
+function getReactRenderLineage(fibers: any[]) {
+  return fibers.map(f => {
+    if (typeof f.type === 'string') return f.type;
+    if (f.type && typeof f.type === 'function') return f.type.name;
+  }).filter(e => e);
+}
+
+// Gets fiber stacktrace (from file paths)
+function getReactRenderStackTrace(fibers: any[]) {
+  return fibers.map(f => f._debugSource)
+    .filter(e => e)
+    .map(d => `${d.fileName}:${d.lineNumber}:${d.columnNumber}`);
 }

@@ -1,5 +1,6 @@
-import { Resource } from '@opentelemetry/resources';
 import { InstrumentationConfigMap } from '@opentelemetry/auto-instrumentations-web';
+import { Resource } from '@opentelemetry/resources';
+import { LogRecord } from '@opentelemetry/sdk-logs';
 export type InstrumentConfig = {
     baseUrl?: string;
     iudexApiKey?: string;
@@ -10,14 +11,18 @@ export type InstrumentConfig = {
     githubUrl?: string;
     env?: string;
     headers?: Record<string, string>;
+    withCredentials?: boolean;
     settings?: {
         instrumentConsole?: boolean;
-        instrumentWindow?: boolean;
         instrumentXhr?: boolean;
         instrumentFetch?: boolean;
+        instrumentUserInteraction?: boolean;
+        instrumentDocumentLoad?: boolean;
         emitToConsole?: boolean;
+        debugMode?: boolean;
     };
     otelConfig?: InstrumentationConfigMap;
+    redact?: RegExp | string | ((logRecord: LogRecord) => void);
 };
 export declare function defaultInstrumentConfig(): {
     baseUrl: string;
@@ -28,9 +33,12 @@ export declare function defaultInstrumentConfig(): {
     githubUrl: string | undefined;
     env: string | undefined;
     headers: {};
+    withCredentials: false;
     settings: {};
     otelConfig: {};
 };
 export declare function instrument(instrumentConfig?: InstrumentConfig): void;
 export declare function buildHeaders(instrumentConfig: Pick<InstrumentConfig, 'iudexApiKey' | 'publicWriteOnlyIudexApiKey' | 'headers'>): Record<string, string>;
 export declare function buildResource(instrumentConfig: Pick<InstrumentConfig, 'serviceName' | 'instanceId' | 'gitCommit' | 'githubUrl' | 'env'>): Resource;
+export declare const FETCH_IGNORE_URLS: RegExp[];
+export declare const EVENT_NAMES: string[];

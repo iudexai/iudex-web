@@ -35,7 +35,7 @@ export function registerOTelOptions(
     iudexApiKey,
     publicWriteOnlyIudexApiKey,
     headers: configHeaders,
-  } = { ...defaultInstrumentConfig, ...options };
+  } = { ...defaultInstrumentConfig(), ...options };
 
 
   let url: any = baseUrl;
@@ -45,7 +45,7 @@ export function registerOTelOptions(
 
   const headers = buildHeaders({ iudexApiKey, publicWriteOnlyIudexApiKey, headers: configHeaders });
 
-  const logExporter = new OTLPLogExporter({ url: baseUrl + '/v1/logs', headers });
+  const logExporter = new OTLPLogExporter({ url: url + '/v1/logs', headers });
   const logRecordProcessor = new SimpleLogRecordProcessor(logExporter);
 
   const traceExporter = new OTLPTraceExporter({ url: url + '/v1/traces', headers });
