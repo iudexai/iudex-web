@@ -13,6 +13,7 @@ Next generation observability. For Node compatible IUDEX, use [iudex-node](https
     - [Console](#console)
     - [Custom logger](#custom-logger)
     - [Tracing functions](#tracing-functions)
+- [Session Replay](#session-replay)
 - [Slack Alerts](#slack-alerts)
 - [API reference](#api-reference)
     - [instrument](#instrument)
@@ -192,6 +193,40 @@ await myFunction();
 
 Anytime `myFunction` is called, it will create a span layer in a trace. `trackArgs` will also track the arguments for the function. Tracked arguments will be truncated at 5000 characters. If you want to track specific parameters, it is recommended that you log them at the beginning of the function.
 
+# Session replay
+IUDEX comes with session replay functionality out of the box. Session replay enhances observability by allowing teams to visually reconstruct user interactions, providing crucial context for debugging, performance analysis, and user experience improvement. 
+
+### Privacy
+Privacy is an important consideration when it comes to session replay. By default, IUDEX does not collect any password information and [masks PII on the client side](https://github.com/iudexai/ghost-shell/blob/rashid-session-replay-docs/modules/iudex-web/src/sessions/utils.ts#L15). If there are any elements that you want to totally hide/redact from the session replay, you can add the `iudex-block` CSS class to the elements you want to remove.
+
+```html
+<div class="iudex-block">Secrets!</div>
+```
+
+If you want to opt out of session replay entirely, you can disable it in the settings.
+
+```typescript
+instrument({
+  serviceName: 'YOUR_SERVICE_NAME',
+  publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', 
+  settings: {
+    disableSessionReplay: true
+  }
+});
+```
+
+### Sampling
+By default, IUDEX records all user interactions. For cost or bandwidth considerations, you can set a sample rate to only collect a subset of sessions.
+
+```typescript
+instrument({
+  serviceName: 'YOUR_SERVICE_NAME',
+  publicWriteOnlyIudexApiKey: 'YOUR_PUBLIC_WRITE_ONLY_KEY', 
+  settings: {
+    sessionReplaySampleRate: 0.1 // 10% of sessions will be recorded
+  }
+});
+```
 
 # Slack Alerts
 You can easily configure Slack alerts on a per-log basis with custom filters an logic by adding it in code.

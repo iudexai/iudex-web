@@ -72,8 +72,8 @@ export function registerOTelOptions(
   const settings = options.settings || {};
 
   // Instrument console
-  if (settings.instrumentConsole || settings.instrumentConsole == undefined) {
-    // instrumentConsole();
+  if (settings.instrumentConsole || settings.instrumentConsole == null) {
+    instrumentConsole();
   }
 
   config.isInstrumented = true;

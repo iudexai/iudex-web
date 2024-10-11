@@ -7,16 +7,8 @@ export declare const workersConfigSettings: {
     instrumentDocumentLoad: boolean;
     instrumentXhr: boolean;
 };
-export declare function withTracing<Env extends {
-    IUDEX_API_KEY?: string;
-} = {
-    IUDEX_API_KEY?: string;
-}, QueueHandlerMessage = unknown, CfHostMetadata = unknown, T extends Handler<Env, QueueHandlerMessage, CfHostMetadata> = Handler<Env, QueueHandlerMessage, CfHostMetadata>>(fn: T, ctx?: TraceCtx<T>, config?: InstrumentConfig): T;
-export declare function trace<Env extends {
-    IUDEX_API_KEY: string;
-} = {
-    IUDEX_API_KEY: string;
-}, QueueHandlerMessage = unknown, CfHostMetadata = unknown, EH extends ExportedHandler<Env, QueueHandlerMessage, CfHostMetadata> = ExportedHandler<Env, QueueHandlerMessage, CfHostMetadata>>(exportedHandler: EH, ctx: TraceCtx & {
+export declare function withTracing<Env = any, QueueHandlerMessage = any, CfHostMetadata = any, T extends Handler<Env, QueueHandlerMessage, CfHostMetadata> = Handler<Env, QueueHandlerMessage, CfHostMetadata>>(fn: T, ctx?: TraceCtx<T>, config?: InstrumentConfig): T;
+export declare function trace<Env = any, QueueHandlerMessage = any, CfHostMetadata = any, EH extends ExportedHandler<Env, QueueHandlerMessage, CfHostMetadata> = ExportedHandler<Env, QueueHandlerMessage, CfHostMetadata>>(exportedHandler: EH, ctx: TraceCtx & {
     name: string;
 }, config?: InstrumentConfig): EH;
 export {};

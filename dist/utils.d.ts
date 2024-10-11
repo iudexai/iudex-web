@@ -1,6 +1,7 @@
 import { LoggerProvider } from '@opentelemetry/api-logs';
 import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base';
 import { Resource } from '@opentelemetry/resources';
+import { SessionProvider } from './sessions/provider';
 export declare const config: {
     isInstrumented: boolean;
     nativeConsole: typeof console;
@@ -10,6 +11,7 @@ export declare const config: {
     };
     loggerProvider?: LoggerProvider;
     tracerProvider?: BasicTracerProvider;
+    sessionProvider?: SessionProvider;
     resource?: Resource;
 };
 export declare const nativeConsole: Console;
@@ -24,7 +26,7 @@ export declare function getCallerInfo(frameDepth: number): {
  * Flattens nested object keys into dot-separated strings.
  * e.g. {a.b.c: 1, a.d: 2, e: 3}
  */
-export declare function flattenObject(obj?: Record<string, any>, parentKey?: string, result?: Record<string, any>): Record<string, any> | undefined;
+export declare function flattenObject(obj?: Record<string, any>, parentKey?: string, result?: Record<string, any>, seen?: Set<any>, maxObjectKeys?: number, maxDepth?: number): Record<string, any> | undefined;
 export declare function emitOtelLog({ level, body, severityNumber, attributes, stackDepth, }: {
     level: string;
     body: any;

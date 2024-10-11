@@ -20,6 +20,8 @@ export type InstrumentConfig = {
         instrumentDocumentLoad?: boolean;
         emitToConsole?: boolean;
         debugMode?: boolean;
+        disableSessionReplay?: boolean;
+        sessionReplaySampleRate?: number;
     };
     otelConfig?: InstrumentationConfigMap;
     redact?: RegExp | string | ((logRecord: LogRecord) => void);

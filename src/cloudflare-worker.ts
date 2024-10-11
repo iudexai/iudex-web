@@ -32,9 +32,9 @@ export const workersConfigSettings = {
 };
 
 export function withTracing<
-  Env extends { IUDEX_API_KEY?: string } = { IUDEX_API_KEY?: string },
-  QueueHandlerMessage = unknown,
-  CfHostMetadata = unknown,
+  Env = any,
+  QueueHandlerMessage = any,
+  CfHostMetadata = any,
   T extends Handler<Env, QueueHandlerMessage, CfHostMetadata>
   = Handler<Env, QueueHandlerMessage, CfHostMetadata>,
 >(
@@ -45,7 +45,7 @@ export function withTracing<
   // Polyfill XMLHttpRequest for workers
   if (!globalThis.XMLHttpRequest) (globalThis as any).XMLHttpRequest = XMLHttpRequest;
 
-  if (!ctx.beforeRun) ctx.beforeRun = (arg1: any, env: Env, ctx: ExecutionContext) => {
+  if (!ctx.beforeRun) ctx.beforeRun = (arg1: any, env: any, ctx: any) => {
     /*
       Otel uses XMLHttpRequest which doesnt exist in workers.
       Its polyfilled with fetch. But since fetch uses promises
@@ -63,7 +63,7 @@ export function withTracing<
     if (config.settings.instrumentXhr == null)
       config.settings.instrumentXhr = false;
     if (config.iudexApiKey == null)
-      config.iudexApiKey = env.IUDEX_API_KEY;
+      config.iudexApiKey = env['IUDEX_API_KEY'] || env['PUBLIC_WRITE_ONLY_IUDEX_API_KEY'];
 
     instrument(config);
   };
@@ -72,9 +72,9 @@ export function withTracing<
 }
 
 export function trace<
-  Env extends { IUDEX_API_KEY: string } = { IUDEX_API_KEY: string },
-  QueueHandlerMessage = unknown,
-  CfHostMetadata = unknown,
+  Env = any,
+  QueueHandlerMessage = any,
+  CfHostMetadata = any,
   EH extends ExportedHandler<Env, QueueHandlerMessage, CfHostMetadata>
   = ExportedHandler<Env, QueueHandlerMessage, CfHostMetadata>,
 >(exportedHandler: EH, ctx: TraceCtx & { name: string }, config: InstrumentConfig = {}): EH {

@@ -8,6 +8,7 @@ import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base';
 
 import _ from 'lodash';
 import { Resource } from '@opentelemetry/resources';
+import { SessionProvider } from './sessions/provider';
 
 export const config: {
   isInstrumented: boolean;
@@ -16,6 +17,7 @@ export const config: {
   workerEvent?: { waitUntil (f: Promise<any>): void };
   loggerProvider?: LoggerProvider;
   tracerProvider?: BasicTracerProvider;
+  sessionProvider?: SessionProvider;
   resource?: Resource;
 } = {
   isInstrumented: false,
@@ -119,17 +121,39 @@ export function flattenObject(
   obj?: Record<string, any>,
   parentKey = '',
   result: Record<string, any> = {},
+  seen: Set<any> = new Set(),
+  // Truncates after this many keys in an object
+  maxObjectKeys = 30,
+  // Truncates after this depth
+  maxDepth = 4,
 ) {
   if (!obj) return;
-  Object.entries(obj).forEach(([key, value]) => {
+
+  if (maxDepth < 0) {
+    result[parentKey] = '<max depth exceeded>';
+    return;
+  }
+
+  Object.entries(obj).forEach(([key, value], i) => {
+    if (i === maxObjectKeys) {
+      result[`${parentKey}.${key}._max_keys_exceeded`] = '<max keys exceeded>';
+      return;
+    }
+    if (i > maxObjectKeys) {
+      return;
+    }
     const newKey = parentKey ? `${parentKey}.${key}` : key;
+    if (seen.has(value)) {
+      result[newKey] = '<circular>';
+      return;
+    }
     if (typeof value === 'object' && value !== null && !Array.isArray(obj[key])) {
-      flattenObject(value, newKey, result);
+      seen.add(value);
+      flattenObject(value, newKey, result, seen, maxObjectKeys, maxDepth - 1);
     } else {
       result[newKey] = value;
     }
   });
-
   return result;
 }
 
@@ -169,6 +193,10 @@ export function emitOtelLog({
       [SEMATTRS_CODE_LINENO]: lineNum,
       [SEMATTRS_CODE_FUNCTION]: caller,
     });
+  }
+
+  if (config.sessionProvider) {
+    attrs.session = config.sessionProvider.getActiveSession();
   }
 
   // TODO: cache named logger

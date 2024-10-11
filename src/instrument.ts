@@ -30,7 +30,8 @@ import { LoggerProvider } from './opentelemetry/logger-provider.js';
 import { RedactLogProcessor } from './opentelemetry/redact-log-processor.js';
 import { patchXmlHttpRequestWithCredentials } from './patches/patch-xmlhttprequest.js';
 import { config, XMLHttpRequest } from './utils.js';
-
+import { BasicSessionProvider } from './sessions/provider.js';
+import { SessionExporter } from './sessions/exporter.js';
 
 export type InstrumentConfig = {
   baseUrl?: string;
@@ -51,6 +52,10 @@ export type InstrumentConfig = {
     instrumentDocumentLoad?: boolean,
     emitToConsole?: boolean,
     debugMode?: boolean,
+
+    // Session Replay
+    disableSessionReplay?: boolean,
+    sessionReplaySampleRate?: number,
   };
   otelConfig?: InstrumentationConfigMap;
   redact?: RegExp | string | ((logRecord: LogRecord) => void);
@@ -208,6 +213,20 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
   // re-patch on top of otel's patch
   patchXmlHttpRequestWithCredentials(url, withCredentials);
 
+  if (typeof window !== 'undefined' && !settings.disableSessionReplay) {
+    const sessionExporter = new SessionExporter({
+      url: url + '/v1/sessions',
+      headers,
+      interval: 1000,
+    });
+    const sessionProvider = new BasicSessionProvider({
+      exporter: sessionExporter,
+      sampleRate: settings.sessionReplaySampleRate,
+    });
+    (window as any).sessionProvider = sessionProvider;
+    config.sessionProvider = sessionProvider;
+  }
+
   // Set global flag
   config.isInstrumented = true;
 }
@@ -266,6 +285,21 @@ export const FETCH_IGNORE_URLS = [
   /datadoghq.com/,
   /sentry.io/,
   /fullstory.com/,
+  /posthog.com/,
+  /segment.com/,
+  /google-analytics.com/,
+  /googletagmanager.com/,
+  /hotjar.com/,
+  /intercom.io/,
+  /facebook.com/,
+  /twitter.com/,
+  /linkedin.com/,
+  /cloudflare.com/,
+  /cloudflare.net/,
+  /cloudfront.net/,
+  /akamaihd.net/,
+  /fastly.net/,
+  /gstatic.com/,
 ];
 
 export const EVENT_NAMES = [

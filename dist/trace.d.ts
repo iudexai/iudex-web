@@ -2,8 +2,11 @@ import { Span } from '@opentelemetry/api';
 export type TraceCtx<T extends (...args: any) => any = (...args: any) => any> = {
     name?: string;
     trackArgs?: boolean;
+    maxArgKeys?: number;
+    maxArgDepth?: number;
     attributes?: Record<string, any>;
     setSpan?: (span: Span, ret: ReturnType<T>) => void;
+    setArgs?: (span: Span, args: any) => void;
     beforeRun?: (...args: Parameters<T>) => void;
 };
 /**

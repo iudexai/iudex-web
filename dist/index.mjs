@@ -1,12 +1,18 @@
 var __defProp = Object.defineProperty;
 var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
+var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
+  get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
+}) : x)(function(x) {
+  if (typeof require !== "undefined") return require.apply(this, arguments);
+  throw Error('Dynamic require of "' + x + '" is not supported');
+});
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
 };
 
 // src/index.ts
-import { trace as trace4 } from "@opentelemetry/api";
+import { SpanStatusCode as SpanStatusCode3, trace as trace4 } from "@opentelemetry/api";
 
 // src/utils.ts
 import {
@@ -83,12 +89,28 @@ function getCallerInfo(frameDepth) {
   return {};
 }
 __name(getCallerInfo, "getCallerInfo");
-function flattenObject(obj, parentKey = "", result = {}) {
+function flattenObject(obj, parentKey = "", result = {}, seen = /* @__PURE__ */ new Set(), maxObjectKeys = 30, maxDepth = 4) {
   if (!obj) return;
-  Object.entries(obj).forEach(([key, value]) => {
+  if (maxDepth < 0) {
+    result[parentKey] = "<max depth exceeded>";
+    return;
+  }
+  Object.entries(obj).forEach(([key, value], i) => {
+    if (i === maxObjectKeys) {
+      result[`${parentKey}.${key}._max_keys_exceeded`] = "<max keys exceeded>";
+      return;
+    }
+    if (i > maxObjectKeys) {
+      return;
+    }
     const newKey = parentKey ? `${parentKey}.${key}` : key;
+    if (seen.has(value)) {
+      result[newKey] = "<circular>";
+      return;
+    }
     if (typeof value === "object" && value !== null && !Array.isArray(obj[key])) {
-      flattenObject(value, newKey, result);
+      seen.add(value);
+      flattenObject(value, newKey, result, seen, maxObjectKeys, maxDepth - 1);
     } else {
       result[newKey] = value;
     }
@@ -112,6 +134,9 @@ function emitOtelLog({
       [SEMATTRS_CODE_LINENO]: lineNum,
       [SEMATTRS_CODE_FUNCTION]: caller
     });
+  }
+  if (config.sessionProvider) {
+    attrs.session = config.sessionProvider.getActiveSession();
   }
   const otelLogger = config.loggerProvider?.getLogger("default") || logs.getLogger("default");
   otelLogger.emit({
@@ -271,30 +296,35 @@ import {
   trace
 } from "@opentelemetry/api";
 function withTracing(fn, ctx = {}) {
-  if (ctx.beforeRun) {
-    const beforeRun = ctx.beforeRun;
-    return function(...args) {
-      beforeRun(...args);
-      return withTracing(fn, { ...ctx, beforeRun: void 0 })(...args);
-    };
-  }
-  if (!config.isInstrumented) {
-    return fn;
-  }
-  const { name, trackArgs = false, attributes, setSpan } = ctx;
-  const tracer = trace.getTracer("default");
   return function(...args) {
+    const { name, trackArgs = true, maxArgKeys, maxArgDepth, attributes, setSpan, setArgs } = ctx;
+    const tracer = trace.getTracer("default");
+    if (!config.isInstrumented) {
+      return fn(...args);
+    }
+    if (ctx.beforeRun) {
+      ctx.beforeRun(...args);
+    }
     return tracer.startActiveSpan(name || fn.name || "<anonymous>", (span) => {
       try {
         if (attributes) {
           span.setAttributes(attributes);
         }
-        if (trackArgs) {
+        if (trackArgs && !setArgs) {
           if (args.length === 1) {
-            span.setAttribute("arg", args[0]);
+            const flatObj = flattenObject(args[0], "", {}, /* @__PURE__ */ new Set(), maxArgKeys, maxArgDepth);
+            flatObj && Object.entries(flatObj).forEach(([key, value]) => {
+              span.setAttribute(key, value);
+            });
           } else if (args.length > 1) {
-            span.setAttribute("args", args);
+            const flatObjs = flattenObject(args, "", {}, /* @__PURE__ */ new Set(), maxArgKeys, maxArgDepth);
+            flatObjs && Object.entries(flatObjs).forEach(([key, value]) => {
+              span.setAttribute(key, value);
+            });
           }
+        }
+        if (setArgs) {
+          setArgs(span, args);
         }
         const ret = fn(...args);
         if (ret.then) {
@@ -305,11 +335,12 @@ function withTracing(fn, ctx = {}) {
             });
           }
           return ret.then((res) => {
-            span.setStatus({ code: SpanStatusCode.OK });
             return res;
           }).catch((err) => {
             span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
             span.recordException(err);
+            span.setAttribute("exception.message", err.message);
+            span.setAttribute("exception.stacktrace", err.stack);
             emitOtelLog({ level: "ERROR", body: err });
             throw err;
           }).finally(() => {
@@ -320,7 +351,6 @@ function withTracing(fn, ctx = {}) {
           setSpan(span, ret);
           return ret;
         }
-        span.setStatus({ code: SpanStatusCode.OK });
         span.end();
         return ret;
       } catch (err) {
@@ -1311,6 +1341,200 @@ function patchXmlHttpRequestWithCredentials(otelBaseUrl, withCredentials) {
 }
 __name(patchXmlHttpRequestWithCredentials, "patchXmlHttpRequestWithCredentials");
 
+// src/sessions/safeCuid.ts
+var cuid;
+if (typeof window !== "undefined" && window.navigator) {
+  cuid = __require("cuid");
+} else {
+  cuid = /* @__PURE__ */ __name(() => {
+    const timestamp = Date.now().toString(36);
+    const randomPart = Math.random().toString(36).substring(2, 5);
+    return `${timestamp}-${randomPart}`;
+  }, "cuid");
+}
+var safeCuid_default = cuid;
+
+// src/sessions/utils.ts
+var EMAIL_REGEX = new RegExp(
+  "[a-zA-Z0-9.!#$%&'*+=?^_`{|}~-]+@[a-zA-Z0-9-]+(?:.[a-zA-Z0-9-]+)*"
+);
+var LONG_NUMBER_REGEX = new RegExp("[0-9]{9,16}");
+var SSN_REGEX = new RegExp("[0-9]{3}-?[0-9]{2}-?[0-9]{4}");
+var PHONE_NUMBER_REGEX = new RegExp(
+  "[+]?[(]?[0-9]{3}[)]?[-s.]?[0-9]{3}[-s.]?[0-9]{4,6}"
+);
+var CREDIT_CARD_REGEX = new RegExp("[0-9]{4}-?[0-9]{4}-?[0-9]{4}-?[0-9]{4}");
+var ADDRESS_REGEX = new RegExp(
+  "[0-9]{1,5}.?[0-9]{0,3}s[a-zA-Z]{2,30}s[a-zA-Z]{2,15}"
+);
+var IP_REGEX = new RegExp("(?:[0-9]{1,3}.){3}[0-9]{1,3}");
+var defaultMaskText = /* @__PURE__ */ __name((text) => {
+  return text.replace(EMAIL_REGEX, "***@***.***").replace(LONG_NUMBER_REGEX, "************").replace(SSN_REGEX, "***-**-****").replace(PHONE_NUMBER_REGEX, "***-***-****").replace(CREDIT_CARD_REGEX, "****-****-****-****").replace(ADDRESS_REGEX, "*** *** ***").replace(IP_REGEX, "***.***.***.***");
+}, "defaultMaskText");
+
+// src/sessions/provider.ts
+var MAX_BUFFER_SIZE = 200;
+var MAX_CHUNK_BYTES = 16 * 1024 * 1024;
+var BasicSessionProvider = class {
+  static {
+    __name(this, "BasicSessionProvider");
+  }
+  eventBuffer;
+  activeSession;
+  exporter;
+  sampleRate;
+  constructor(sessionOptions) {
+    this.exporter = sessionOptions.exporter;
+    this.sampleRate = sessionOptions.sampleRate ?? 1;
+    const sessionId = sessionOptions.sessionId ?? this.generateSessionId();
+    this.activeSession = { id: sessionId };
+    this.eventBuffer = {
+      count: 0,
+      size: 0,
+      events: []
+    };
+    void this.initializeRecording();
+  }
+  getActiveSession() {
+    return this.activeSession;
+  }
+  flushBuffer() {
+    if (this.eventBuffer.count === 0) {
+      return;
+    }
+    const chunk = {
+      sessionId: this.activeSession.id,
+      events: [...this.eventBuffer.events]
+    };
+    this.exporter.addToQueue(chunk);
+    this.eventBuffer.count = 0;
+    this.eventBuffer.size = 0;
+    this.eventBuffer.events = [];
+  }
+  async initializeRecording() {
+    const sessionId = this.activeSession.id;
+    const random = Math.abs(
+      Math.sin(sessionId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0))
+    );
+    const shouldSample = random < this.sampleRate;
+    if (!shouldSample) {
+      return;
+    }
+    try {
+      const { record } = await import("rrweb");
+      record({
+        emit: this.handleEvent.bind(this),
+        blockClass: "iudex-block",
+        ignoreClass: "iudex-ignore",
+        maskAllInputs: true,
+        maskTextSelector: "*",
+        // Mask all text
+        maskTextFn: defaultMaskText,
+        maskInputFn: defaultMaskText
+      });
+      window?.addEventListener("beforeunload", this._onBeforeUnload);
+    } catch (error) {
+      console.error("Failed to initialize recording:", error);
+    }
+  }
+  handleEvent(event) {
+    this.eventBuffer.events.push(event);
+    this.eventBuffer.count += 1;
+    this.eventBuffer.size += JSON.stringify(event).length;
+    if (this.shouldFlushBuffer()) {
+      this.flushBuffer();
+    }
+  }
+  shouldFlushBuffer() {
+    return this.eventBuffer.count > MAX_BUFFER_SIZE || this.eventBuffer.size > MAX_CHUNK_BYTES;
+  }
+  generateSessionId() {
+    return `ses_${safeCuid_default()}`;
+  }
+  _onBeforeUnload = /* @__PURE__ */ __name(() => {
+    this.flushBuffer();
+    this.exporter.shutdown();
+  }, "_onBeforeUnload");
+};
+
+// src/sessions/exporter.ts
+var SessionExporter = class {
+  static {
+    __name(this, "SessionExporter");
+  }
+  url;
+  headers = {};
+  queue = [];
+  isUploading = false;
+  interval;
+  timeoutId = null;
+  constructor({
+    url,
+    headers,
+    interval
+  }) {
+    this.url = url;
+    this.headers = headers;
+    this.interval = interval;
+  }
+  addToQueue(chunk) {
+    this.queue.push(chunk);
+    this.scheduleUpload();
+  }
+  scheduleUpload() {
+    if (!this.isUploading && !this.timeoutId) {
+      this.timeoutId = setTimeout(() => this.startUploading(), this.interval);
+    }
+  }
+  async startUploading() {
+    if (this.isUploading || this.queue.length === 0) {
+      this.timeoutId = null;
+      return;
+    }
+    this.isUploading = true;
+    const chunk = this.queue[0];
+    this.queue.shift();
+    try {
+      await this.uploadChunk(chunk);
+    } catch (error) {
+      console.error("Failed to upload chunk:", error);
+      this.queue.unshift(chunk);
+    } finally {
+      this.isUploading = false;
+      this.timeoutId = null;
+      this.scheduleUpload();
+    }
+  }
+  async uploadChunk(chunk) {
+    const response = await fetch(this.url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...this.headers
+      },
+      body: JSON.stringify(chunk)
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to upload chunk: ${response.statusText}`);
+    }
+  }
+  shutdown() {
+    if (this.timeoutId) {
+      clearTimeout(this.timeoutId);
+      this.timeoutId = null;
+    }
+    if (this.queue.length > 0) {
+      const promises = this.queue.map((chunk) => this.uploadChunk(chunk));
+      Promise.allSettled(promises).then((results) => {
+        const failed = results.filter((r) => r.status === "rejected").length;
+        console.log(`Uploaded ${results.length - failed} chunks, ${failed} failed`);
+      }).catch((error) => {
+        console.error("Failed to upload remaining chunks:", error);
+      });
+    }
+  }
+};
+
 // src/instrument.ts
 function defaultInstrumentConfig() {
   if (typeof process === "undefined") {
@@ -1418,6 +1642,19 @@ function instrument(instrumentConfig = {}) {
     instrumentConsole();
   }
   patchXmlHttpRequestWithCredentials(url, withCredentials);
+  if (typeof window !== "undefined" && !settings.disableSessionReplay) {
+    const sessionExporter = new SessionExporter({
+      url: url + "/v1/sessions",
+      headers,
+      interval: 1e3
+    });
+    const sessionProvider = new BasicSessionProvider({
+      exporter: sessionExporter,
+      sampleRate: settings.sessionReplaySampleRate
+    });
+    window.sessionProvider = sessionProvider;
+    config.sessionProvider = sessionProvider;
+  }
   config.isInstrumented = true;
 }
 __name(instrument, "instrument");
@@ -1461,7 +1698,22 @@ var FETCH_IGNORE_URLS = [
   /logr-ingest.com/,
   /datadoghq.com/,
   /sentry.io/,
-  /fullstory.com/
+  /fullstory.com/,
+  /posthog.com/,
+  /segment.com/,
+  /google-analytics.com/,
+  /googletagmanager.com/,
+  /hotjar.com/,
+  /intercom.io/,
+  /facebook.com/,
+  /twitter.com/,
+  /linkedin.com/,
+  /cloudflare.com/,
+  /cloudflare.net/,
+  /cloudfront.net/,
+  /akamaihd.net/,
+  /fastly.net/,
+  /gstatic.com/
 ];
 var EVENT_NAMES = [
   "click",
@@ -1508,7 +1760,8 @@ function registerOTelOptions(optionsOrServiceName) {
   options.traceExporter = traceExporter;
   options.attributes = resource.attributes;
   const settings = options.settings || {};
-  if (settings.instrumentConsole || settings.instrumentConsole == void 0) {
+  if (settings.instrumentConsole || settings.instrumentConsole == null) {
+    instrumentConsole();
   }
   config.isInstrumented = true;
   return options;
@@ -1562,7 +1815,7 @@ function withTracing2(fn, ctx = {}, config2 = {}) {
     if (config2.settings.instrumentXhr == null)
       config2.settings.instrumentXhr = false;
     if (config2.iudexApiKey == null)
-      config2.iudexApiKey = env.IUDEX_API_KEY;
+      config2.iudexApiKey = env["IUDEX_API_KEY"] || env["PUBLIC_WRITE_ONLY_IUDEX_API_KEY"];
     instrument(config2);
   };
   return withTracing(fn, ctx);
@@ -1586,6 +1839,23 @@ function trackAttribute(key, value) {
   activeSpan?.setAttribute(key, value);
 }
 __name(trackAttribute, "trackAttribute");
+var setAttribute = trackAttribute;
+function setStatus(code) {
+  const activeSpan = trace4.getActiveSpan();
+  activeSpan?.setStatus({ code });
+}
+__name(setStatus, "setStatus");
+function setError(error) {
+  const activeSpan = trace4.getActiveSpan();
+  activeSpan?.setStatus({ code: SpanStatusCode3.ERROR, message: error.message });
+  activeSpan?.recordException(error);
+}
+__name(setError, "setError");
+function setName(name) {
+  const activeSpan = trace4.getActiveSpan();
+  activeSpan?.updateName(name);
+}
+__name(setName, "setName");
 function trackGlobalAttribute(key, value) {
   const { loggerProvider, tracerProvider } = config;
   const loggerAttrs = loggerProvider?._sharedState.resource?._attributes;
@@ -1617,6 +1887,10 @@ export {
   console_instrumentation_exports as iudexConsole,
   nativeConsole,
   registerOTelOptions,
+  setAttribute,
+  setError,
+  setName,
+  setStatus,
   trackAttribute,
   trackGlobalAttribute,
   useTracing,
