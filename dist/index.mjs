@@ -1434,7 +1434,7 @@ var BasicSessionProvider = class {
       });
       window?.addEventListener("beforeunload", this._onBeforeUnload);
     } catch (error) {
-      console.error("Failed to initialize recording:", error);
+      console.info("Failed to initialize recording:", error);
     }
   }
   handleEvent(event) {
@@ -1497,7 +1497,7 @@ var SessionExporter = class {
     try {
       await this.uploadChunk(chunk);
     } catch (error) {
-      console.error("Failed to upload chunk:", error);
+      console.info("Failed to upload chunk:", error);
       this.queue.unshift(chunk);
     } finally {
       this.isUploading = false;
@@ -1529,7 +1529,7 @@ var SessionExporter = class {
         const failed = results.filter((r) => r.status === "rejected").length;
         console.log(`Uploaded ${results.length - failed} chunks, ${failed} failed`);
       }).catch((error) => {
-        console.error("Failed to upload remaining chunks:", error);
+        console.warn("Failed to upload remaining chunks:", error);
       });
     }
   }

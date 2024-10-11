@@ -95,7 +95,7 @@ export class BasicSessionProvider implements SessionProvider {
 
       window?.addEventListener('beforeunload', this._onBeforeUnload);
     } catch (error) {
-      console.error('Failed to initialize recording:', error);
+      console.info('Failed to initialize recording:', error);
     }
   }
 

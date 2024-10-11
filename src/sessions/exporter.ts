@@ -51,7 +51,7 @@ export class SessionExporter {
     try {
       await this.uploadChunk(chunk);
     } catch (error) {
-      console.error('Failed to upload chunk:', error);
+      console.info('Failed to upload chunk:', error);
       this.queue.unshift(chunk);
     } finally {
       this.isUploading = false;
@@ -87,7 +87,7 @@ export class SessionExporter {
         const failed = results.filter(r => r.status === 'rejected').length;
         console.log(`Uploaded ${results.length - failed} chunks, ${failed} failed`);
       }).catch((error) => {
-        console.error('Failed to upload remaining chunks:', error);
+        console.warn('Failed to upload remaining chunks:', error);
       });
     }
   }
