@@ -197,7 +197,7 @@ Anytime `myFunction` is called, it will create a span layer in a trace. `trackAr
 IUDEX comes with session replay functionality out of the box. Session replay enhances observability by allowing teams to visually reconstruct user interactions, providing crucial context for debugging, performance analysis, and user experience improvement. 
 
 ### Privacy
-Privacy is an important consideration when it comes to session replay. By default, IUDEX does not collect any password information and [masks PII on the client side](https://github.com/iudexai/ghost-shell/blob/rashid-session-replay-docs/modules/iudex-web/src/sessions/utils.ts#L15). If there are any elements that you want to totally hide/redact from the session replay, you can add the `iudex-block` CSS class to the elements you want to remove.
+Privacy is an important consideration when it comes to session replay. By default, IUDEX does not collect any password information and [masks PII on the client side](https://github.com/iudexai/iudex-web/blob/main/src/sessions/utils.ts). If there are any elements that you want to totally hide/redact from the session replay, you can add the `iudex-block` CSS class to the elements you want to remove.
 
 ```html
 <div class="iudex-block">Secrets!</div>
