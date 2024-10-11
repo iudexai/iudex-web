@@ -1374,7 +1374,7 @@ var defaultMaskText = /* @__PURE__ */ __name((text) => {
 
 // src/sessions/provider.ts
 var MAX_BUFFER_SIZE = 200;
-var MAX_CHUNK_BYTES = 16 * 1024 * 1024;
+var MAX_CHUNK_BYTES = 3 * 1024 * 1024;
 var BasicSessionProvider = class {
   static {
     __name(this, "BasicSessionProvider");

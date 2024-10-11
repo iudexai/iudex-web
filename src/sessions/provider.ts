@@ -4,7 +4,7 @@ import cuid from './safeCuid.js';
 import { defaultMaskText } from './utils';
 
 const MAX_BUFFER_SIZE = 200;
-const MAX_CHUNK_BYTES = 16 * 1024 * 1024; // 16MB
+const MAX_CHUNK_BYTES = 3 * 1024 * 1024; // 3MB
 
 interface Session {
   id: string;
