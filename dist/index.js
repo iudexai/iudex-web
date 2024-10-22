@@ -352,14 +352,20 @@ function withTracing(fn, ctx = {}) {
         }
         if (trackArgs && !setArgs) {
           if (args.length === 1) {
-            const flatObj = flattenObject(args[0], "", {}, /* @__PURE__ */ new Set(), maxArgKeys, maxArgDepth);
-            flatObj && Object.entries(flatObj).forEach(([key, value]) => {
-              span.setAttribute(key, value);
-            });
+            if (args[0] != null && typeof args[0] === "object") {
+              const flatObj = flattenObject(args[0], "", {}, /* @__PURE__ */ new Set(), maxArgKeys, maxArgDepth);
+              flatObj && Object.entries(flatObj).forEach(([key, value]) => {
+                span.setAttribute(key, value);
+              });
+            } else if (args[0] == null) {
+              span.setAttribute("args.0", `<${args[0]}>`);
+            } else {
+              span.setAttribute("args.0", args[0]);
+            }
           } else if (args.length > 1) {
             const flatObjs = flattenObject(args, "", {}, /* @__PURE__ */ new Set(), maxArgKeys, maxArgDepth);
             flatObjs && Object.entries(flatObjs).forEach(([key, value]) => {
-              span.setAttribute(key, value);
+              span.setAttribute(`args.${key}`, value);
             });
           }
         }
@@ -369,10 +375,8 @@ function withTracing(fn, ctx = {}) {
         const ret = fn(...args);
         if (ret.then) {
           if (setSpan) {
-            return ret.then((res) => {
-              setSpan(span, ret);
-              return res;
-            });
+            setSpan(span, ret);
+            return ret;
           }
           return ret.then((res) => {
             return res;
@@ -394,8 +398,10 @@ function withTracing(fn, ctx = {}) {
         span.end();
         return ret;
       } catch (err) {
-        span.setStatus({ code: import_api.SpanStatusCode.ERROR, message: String(err) });
+        span.setStatus({ code: import_api.SpanStatusCode.ERROR, message: err.message });
         span.recordException(err);
+        span.setAttribute("exception.message", err.message);
+        err.stack && span.setAttribute("exception.stacktrace", err.stack || "");
         emitOtelLog({ level: "ERROR", body: err });
         span.end();
         throw err;
@@ -412,15 +418,385 @@ __name(useTracing, "useTracing");
 // src/instrument.ts
 var import_exporter_logs_otlp_proto = require("@opentelemetry/exporter-logs-otlp-proto");
 var import_exporter_trace_otlp_http = require("@opentelemetry/exporter-trace-otlp-http");
-var import_instrumentation2 = require("@opentelemetry/instrumentation");
+var import_instrumentation3 = require("@opentelemetry/instrumentation");
 var import_instrumentation_document_load = require("@opentelemetry/instrumentation-document-load");
-var import_instrumentation_fetch = require("@opentelemetry/instrumentation-fetch");
+
+// src/instrumentations/fetch-instrumentation.ts
+var api = __toESM(require("@opentelemetry/api"));
+var import_instrumentation = require("@opentelemetry/instrumentation");
+var core = __toESM(require("@opentelemetry/core"));
+var web = __toESM(require("@opentelemetry/sdk-trace-web"));
+var import_AttributeNames = require("@opentelemetry/instrumentation-fetch/build/src/enums/AttributeNames");
+var import_semantic_conventions2 = require("@opentelemetry/semantic-conventions");
+var import_version = require("@opentelemetry/instrumentation-fetch/build/src/version");
+var import_core = require("@opentelemetry/core");
+var OBSERVER_WAIT_TIME_MS = 300;
+var isNode = typeof process === "object" && process.release?.name === "node";
+var FetchInstrumentation = class extends import_instrumentation.InstrumentationBase {
+  static {
+    __name(this, "FetchInstrumentation");
+  }
+  component = "fetch";
+  version = import_version.VERSION;
+  moduleName = this.component;
+  _usedResources = /* @__PURE__ */ new WeakSet();
+  _tasksCount = 0;
+  constructor(config2 = {}) {
+    super("@opentelemetry/instrumentation-fetch", import_version.VERSION, config2);
+  }
+  init() {
+  }
+  /**
+   * Add cors pre flight child span
+   * @param span
+   * @param corsPreFlightRequest
+   */
+  _addChildSpan(span, corsPreFlightRequest) {
+    const childSpan = this.tracer.startSpan(
+      "CORS Preflight",
+      {
+        startTime: corsPreFlightRequest[web.PerformanceTimingNames.FETCH_START]
+      },
+      api.trace.setSpan(api.context.active(), span)
+    );
+    if (!this.getConfig().ignoreNetworkEvents) {
+      web.addSpanNetworkEvents(childSpan, corsPreFlightRequest);
+    }
+    childSpan.end(
+      corsPreFlightRequest[web.PerformanceTimingNames.RESPONSE_END]
+    );
+  }
+  /**
+   * Adds more attributes to span just before ending it
+   * @param span
+   * @param response
+   */
+  _addFinalSpanAttributes(span, response) {
+    const parsedUrl = web.parseUrl(response.url);
+    span.setAttribute(import_semantic_conventions2.SEMATTRS_HTTP_STATUS_CODE, response.status);
+    if (response.statusText != null) {
+      span.setAttribute(import_AttributeNames.AttributeNames.HTTP_STATUS_TEXT, response.statusText);
+    }
+    span.setAttribute(import_semantic_conventions2.SEMATTRS_HTTP_HOST, parsedUrl.host);
+    span.setAttribute(
+      import_semantic_conventions2.SEMATTRS_HTTP_SCHEME,
+      parsedUrl.protocol.replace(":", "")
+    );
+    if (typeof navigator !== "undefined") {
+      span.setAttribute(import_semantic_conventions2.SEMATTRS_HTTP_USER_AGENT, navigator.userAgent);
+    }
+  }
+  /**
+   * Add headers
+   * @param options
+   * @param spanUrl
+   */
+  _addHeaders(options, spanUrl) {
+    if (!web.shouldPropagateTraceHeaders(
+      spanUrl,
+      this.getConfig().propagateTraceHeaderCorsUrls
+    )) {
+      const headers = {};
+      api.propagation.inject(api.context.active(), headers);
+      if (Object.keys(headers).length > 0) {
+        this._diag.debug("headers inject skipped due to CORS policy");
+      }
+      return;
+    }
+    const sessionId = config.sessionProvider?.getActiveSession()?.id;
+    let baggage = api.propagation.getActiveBaggage() || api.propagation.createBaggage({});
+    if (sessionId) {
+      baggage = baggage.setEntry("session.id", { value: sessionId });
+    }
+    const ctx = api.propagation.setBaggage(api.context.active(), baggage);
+    api.context.with(ctx, () => {
+      if (options instanceof Request) {
+        api.propagation.inject(api.context.active(), options.headers, {
+          set: /* @__PURE__ */ __name((h, k, v) => h.set(k, typeof v === "string" ? v : String(v)), "set")
+        });
+      } else if (options.headers instanceof Headers) {
+        api.propagation.inject(api.context.active(), options.headers, {
+          set: /* @__PURE__ */ __name((h, k, v) => h.set(k, typeof v === "string" ? v : String(v)), "set")
+        });
+      } else if (options.headers instanceof Map) {
+        api.propagation.inject(api.context.active(), options.headers, {
+          set: /* @__PURE__ */ __name((h, k, v) => h.set(k, typeof v === "string" ? v : String(v)), "set")
+        });
+      } else {
+        const headers = {};
+        api.propagation.inject(api.context.active(), headers);
+        options.headers = Object.assign({}, headers, options.headers || {});
+      }
+    });
+  }
+  /**
+   * Clears the resource timings and all resources assigned with spans
+   *     when {@link FetchPluginConfig.clearTimingResources} is
+   *     set to true (default false)
+   * @private
+   */
+  _clearResources() {
+    if (this._tasksCount === 0 && this.getConfig().clearTimingResources) {
+      performance.clearResourceTimings();
+      this._usedResources = /* @__PURE__ */ new WeakSet();
+    }
+  }
+  /**
+   * Creates a new span
+   * @param url
+   * @param options
+   */
+  _createSpan(url, options = {}) {
+    if (core.isUrlIgnored(url, this.getConfig().ignoreUrls)) {
+      this._diag.debug("ignoring span as url matches ignored url");
+      return;
+    }
+    const method = (options.method || "GET").toUpperCase();
+    const spanName = `HTTP ${method}`;
+    return this.tracer.startSpan(spanName, {
+      kind: api.SpanKind.CLIENT,
+      attributes: {
+        [import_AttributeNames.AttributeNames.COMPONENT]: this.moduleName,
+        [import_semantic_conventions2.SEMATTRS_HTTP_METHOD]: method,
+        [import_semantic_conventions2.SEMATTRS_HTTP_URL]: url
+      }
+    });
+  }
+  /**
+   * Finds appropriate resource and add network events to the span
+   * @param span
+   * @param resourcesObserver
+   * @param endTime
+   */
+  _findResourceAndAddNetworkEvents(span, resourcesObserver, endTime) {
+    let resources = resourcesObserver.entries;
+    if (!resources.length) {
+      if (!performance.getEntriesByType) {
+        return;
+      }
+      resources = performance.getEntriesByType(
+        "resource"
+      );
+    }
+    const resource = web.getResource(
+      resourcesObserver.spanUrl,
+      resourcesObserver.startTime,
+      endTime,
+      resources,
+      this._usedResources,
+      "fetch"
+    );
+    if (resource.mainRequest) {
+      const mainRequest = resource.mainRequest;
+      this._markResourceAsUsed(mainRequest);
+      const corsPreFlightRequest = resource.corsPreFlightRequest;
+      if (corsPreFlightRequest) {
+        this._addChildSpan(span, corsPreFlightRequest);
+        this._markResourceAsUsed(corsPreFlightRequest);
+      }
+      if (!this.getConfig().ignoreNetworkEvents) {
+        web.addSpanNetworkEvents(span, mainRequest);
+      }
+    }
+  }
+  /**
+   * Marks certain [resource]{@link PerformanceResourceTiming} when information
+   * from this is used to add events to span.
+   * This is done to avoid reusing the same resource again for next span
+   * @param resource
+   */
+  _markResourceAsUsed(resource) {
+    this._usedResources.add(resource);
+  }
+  /**
+   * Finish span, add attributes, network events etc.
+   * @param span
+   * @param spanData
+   * @param response
+   */
+  _endSpan(span, spanData, response) {
+    const endTime = core.millisToHrTime(Date.now());
+    const performanceEndTime = core.hrTime();
+    this._addFinalSpanAttributes(span, response);
+    setTimeout(() => {
+      spanData.observer?.disconnect();
+      this._findResourceAndAddNetworkEvents(span, spanData, performanceEndTime);
+      this._tasksCount--;
+      this._clearResources();
+      span.end(endTime);
+    }, OBSERVER_WAIT_TIME_MS);
+  }
+  /**
+   * Patches the constructor of fetch
+   */
+  _patchConstructor() {
+    return (original) => {
+      const plugin = this;
+      return /* @__PURE__ */ __name(function patchConstructor(...args) {
+        const self = this;
+        const url = web.parseUrl(
+          args[0] instanceof Request ? args[0].url : String(args[0])
+        ).href;
+        const options = args[0] instanceof Request ? args[0] : args[1] || {};
+        const createdSpan = plugin._createSpan(url, options);
+        if (!createdSpan) {
+          return original.apply(this, args);
+        }
+        const spanData = plugin._prepareSpanData(url);
+        function endSpanOnError(span, error) {
+          plugin._applyAttributesAfterFetch(span, options, error);
+          plugin._endSpan(span, spanData, {
+            status: error.status || 0,
+            statusText: error.message,
+            url
+          });
+        }
+        __name(endSpanOnError, "endSpanOnError");
+        function endSpanOnSuccess(span, response) {
+          plugin._applyAttributesAfterFetch(span, options, response);
+          if (response.status >= 200 && response.status < 400) {
+            plugin._endSpan(span, spanData, response);
+          } else {
+            plugin._endSpan(span, spanData, {
+              status: response.status,
+              statusText: response.statusText,
+              url
+            });
+          }
+        }
+        __name(endSpanOnSuccess, "endSpanOnSuccess");
+        function onSuccess(span, resolve, response) {
+          try {
+            const resClone = response.clone();
+            const resClone4Hook = response.clone();
+            const body = resClone.body;
+            if (body) {
+              const reader = body.getReader();
+              const read = /* @__PURE__ */ __name(() => {
+                reader.read().then(
+                  ({ done }) => {
+                    if (done) {
+                      endSpanOnSuccess(span, resClone4Hook);
+                    } else {
+                      read();
+                    }
+                  },
+                  (error) => {
+                    endSpanOnError(span, error);
+                  }
+                );
+              }, "read");
+              read();
+            } else {
+              endSpanOnSuccess(span, response);
+            }
+          } finally {
+            resolve(response);
+          }
+        }
+        __name(onSuccess, "onSuccess");
+        function onError(span, reject, error) {
+          try {
+            endSpanOnError(span, error);
+          } finally {
+            reject(error);
+          }
+        }
+        __name(onError, "onError");
+        return new Promise((resolve, reject) => {
+          return api.context.with(
+            api.trace.setSpan(api.context.active(), createdSpan),
+            () => {
+              plugin._addHeaders(options, url);
+              plugin._tasksCount++;
+              return original.apply(
+                self,
+                options instanceof Request ? [options] : [url, options]
+              ).then(
+                onSuccess.bind(self, createdSpan, resolve),
+                onError.bind(self, createdSpan, reject)
+              );
+            }
+          );
+        });
+      }, "patchConstructor");
+    };
+  }
+  _applyAttributesAfterFetch(span, request, result) {
+    const applyCustomAttributesOnSpan = this.getConfig().applyCustomAttributesOnSpan;
+    if (applyCustomAttributesOnSpan) {
+      (0, import_instrumentation.safeExecuteInTheMiddle)(
+        () => applyCustomAttributesOnSpan(span, request, result),
+        (error) => {
+          if (!error) {
+            return;
+          }
+          this._diag.error("applyCustomAttributesOnSpan", error);
+        },
+        true
+      );
+    }
+  }
+  /**
+   * Prepares a span data - needed later for matching appropriate network
+   *     resources
+   * @param spanUrl
+   */
+  _prepareSpanData(spanUrl) {
+    const startTime = core.hrTime();
+    const entries = [];
+    if (typeof PerformanceObserver !== "function") {
+      return { entries, startTime, spanUrl };
+    }
+    const observer = new PerformanceObserver((list) => {
+      const perfObsEntries = list.getEntries();
+      perfObsEntries.forEach((entry) => {
+        if (entry.initiatorType === "fetch" && entry.name === spanUrl) {
+          entries.push(entry);
+        }
+      });
+    });
+    observer.observe({
+      entryTypes: ["resource"]
+    });
+    return { entries, observer, startTime, spanUrl };
+  }
+  /**
+   * implements enable function
+   */
+  enable() {
+    if (isNode) {
+      this._diag.warn(
+        "this instrumentation is intended for web usage only, it does not instrument Node.js's fetch()"
+      );
+      return;
+    }
+    if ((0, import_instrumentation.isWrapped)(fetch)) {
+      this._unwrap(import_core._globalThis, "fetch");
+      this._diag.debug("removing previous patch for constructor");
+    }
+    this._wrap(import_core._globalThis, "fetch", this._patchConstructor());
+  }
+  /**
+   * implements unpatch function
+   */
+  disable() {
+    if (isNode) {
+      return;
+    }
+    this._unwrap(import_core._globalThis, "fetch");
+    this._usedResources = /* @__PURE__ */ new WeakSet();
+  }
+};
+
+// src/instrument.ts
 var import_instrumentation_xml_http_request = require("@opentelemetry/instrumentation-xml-http-request");
 var import_resources2 = require("@opentelemetry/resources");
 var import_sdk_logs2 = require("@opentelemetry/sdk-logs");
 var import_sdk_trace_base = require("@opentelemetry/sdk-trace-base");
 var import_sdk_trace_web2 = require("@opentelemetry/sdk-trace-web");
-var import_semantic_conventions2 = require("@opentelemetry/semantic-conventions");
+var import_core4 = require("@opentelemetry/core");
+var import_semantic_conventions3 = require("@opentelemetry/semantic-conventions");
 var import_lodash2 = __toESM(require("lodash"));
 
 // src/instrumentations/console-instrumentation.ts
@@ -473,9 +849,9 @@ function isObject(obj) {
 __name(isObject, "isObject");
 
 // src/instrumentations/user-interaction-instrumentation.ts
-var import_instrumentation = require("@opentelemetry/instrumentation");
-var api = __toESM(require("@opentelemetry/api"));
-var import_core = require("@opentelemetry/core");
+var import_instrumentation2 = require("@opentelemetry/instrumentation");
+var api2 = __toESM(require("@opentelemetry/api"));
+var import_core2 = require("@opentelemetry/core");
 var import_sdk_trace_web = require("@opentelemetry/sdk-trace-web");
 var PACKAGE_NAME = "iudex-web/instrumentation-user-interaction";
 var PACKAGE_VERSION = "0.39.0";
@@ -486,7 +862,7 @@ function defaultShouldPreventSpanCreation() {
   return false;
 }
 __name(defaultShouldPreventSpanCreation, "defaultShouldPreventSpanCreation");
-var UserInteractionInstrumentation = class extends import_instrumentation.InstrumentationBase {
+var UserInteractionInstrumentation = class extends import_instrumentation2.InstrumentationBase {
   static {
     __name(this, "UserInteractionInstrumentation");
   }
@@ -521,7 +897,7 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
     const spanData = this._spansData.get(span);
     if (spanData) {
       if (task.source === "setTimeout") {
-        spanData.hrTimeLastTimeout = (0, import_core.hrTime)();
+        spanData.hrTimeLastTimeout = (0, import_core2.hrTime)();
       } else if (task.source !== "Promise.then" && task.source !== "setTimeout") {
         spanData.hrTimeLastTimeout = void 0;
       }
@@ -568,7 +944,7 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
             ["http.url" /* HTTP_URL */]: window.location.href
           }
         },
-        parentSpan ? api.trace.setSpan(api.context.active(), parentSpan) : void 0
+        parentSpan ? api2.trace.setSpan(api2.context.active(), parentSpan) : void 0
       );
       if (this._shouldPreventSpanCreation(eventName, element, span) === true) {
         return void 0;
@@ -602,11 +978,11 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
    * @private
    */
   _getCurrentSpan(zone) {
-    const context3 = zone.get(ZONE_CONTEXT_KEY);
-    if (context3) {
-      return api.trace.getSpan(context3);
+    const context4 = zone.get(ZONE_CONTEXT_KEY);
+    if (context4) {
+      return api2.trace.getSpan(context4);
     }
-    return context3;
+    return context4;
   }
   /**
    * Increment number of tasks that are run within the same zone.
@@ -721,8 +1097,8 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
               }
             }
             try {
-              return api.context.with(
-                api.trace.setSpan(api.context.active(), span),
+              return api2.context.with(
+                api2.trace.setSpan(api2.context.active(), span),
                 () => {
                   const result = plugin._invokeListener(listener, this, args);
                   return result;
@@ -730,7 +1106,7 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
               );
             } catch (e) {
               const error = e;
-              span.setStatus({ code: api.SpanStatusCode.ERROR, message: error.message });
+              span.setStatus({ code: api2.SpanStatusCode.ERROR, message: error.message });
               span.recordException(error);
               emitOtelLog({ level: "ERROR", body: error.stack });
               throw e;
@@ -816,18 +1192,18 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
    * unpatch the history api methods
    */
   _unpatchHistoryApi() {
-    if ((0, import_instrumentation.isWrapped)(history.replaceState)) this._unwrap(history, "replaceState");
-    if ((0, import_instrumentation.isWrapped)(history.pushState)) this._unwrap(history, "pushState");
-    if ((0, import_instrumentation.isWrapped)(history.back)) this._unwrap(history, "back");
-    if ((0, import_instrumentation.isWrapped)(history.forward)) this._unwrap(history, "forward");
-    if ((0, import_instrumentation.isWrapped)(history.go)) this._unwrap(history, "go");
+    if ((0, import_instrumentation2.isWrapped)(history.replaceState)) this._unwrap(history, "replaceState");
+    if ((0, import_instrumentation2.isWrapped)(history.pushState)) this._unwrap(history, "pushState");
+    if ((0, import_instrumentation2.isWrapped)(history.back)) this._unwrap(history, "back");
+    if ((0, import_instrumentation2.isWrapped)(history.forward)) this._unwrap(history, "forward");
+    if ((0, import_instrumentation2.isWrapped)(history.go)) this._unwrap(history, "go");
   }
   /**
    * Updates interaction span name
    * @param url
    */
   _updateInteractionName(url) {
-    const span = api.trace.getSpan(api.context.active());
+    const span = api2.trace.getSpan(api2.context.active());
     if (span && typeof span.updateName === "function") {
       span.updateName(`${EVENT_NAVIGATION_NAME} ${url}`);
     }
@@ -893,8 +1269,8 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
           }
           return activeZone.run(() => {
             try {
-              return api.context.with(
-                api.trace.setSpan(api.context.active(), span),
+              return api2.context.with(
+                api2.trace.setSpan(api2.context.active(), span),
                 () => {
                   const currentZone = Zone.current;
                   task._zone = currentZone;
@@ -908,7 +1284,7 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
               );
             } catch (e) {
               const error = e;
-              span.setStatus({ code: api.SpanStatusCode.ERROR, message: error.message });
+              span.setStatus({ code: api2.SpanStatusCode.ERROR, message: error.message });
               span.recordException(error);
               emitOtelLog({ level: "ERROR", body: error.zoneAwareStack || error.stack });
               throw e;
@@ -926,8 +1302,8 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
               if (span2) {
                 return activeZone.run(() => {
                   try {
-                    return api.context.with(
-                      api.trace.setSpan(api.context.active(), span2),
+                    return api2.context.with(
+                      api2.trace.setSpan(api2.context.active(), span2),
                       () => {
                         const currentZone = Zone.current;
                         task._zone = currentZone;
@@ -941,7 +1317,7 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
                     );
                   } catch (e) {
                     const error = e;
-                    span2.setStatus({ code: api.SpanStatusCode.ERROR, message: error.message });
+                    span2.setStatus({ code: api2.SpanStatusCode.ERROR, message: error.message });
                     span2.recordException(error);
                     emitOtelLog({ level: "ERROR", body: error.zoneAwareStack || error.stack });
                     throw e;
@@ -957,7 +1333,7 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
           return original.call(activeZone, task, applyThis, applyArgs);
         } catch (e) {
           const error = e;
-          span?.setStatus({ code: api.SpanStatusCode.ERROR, message: error.message });
+          span?.setStatus({ code: api2.SpanStatusCode.ERROR, message: error.message });
           span?.recordException(error);
           emitOtelLog({ level: "ERROR", body: error.zoneAwareStack || error.stack });
           throw e;
@@ -1019,15 +1395,15 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
       !!ZoneWithPrototype
     );
     if (ZoneWithPrototype) {
-      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.runTask)) {
+      if ((0, import_instrumentation2.isWrapped)(ZoneWithPrototype.prototype.runTask)) {
         this._unwrap(ZoneWithPrototype.prototype, "runTask");
         this._diag.debug("removing previous patch from method runTask");
       }
-      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.scheduleTask)) {
+      if ((0, import_instrumentation2.isWrapped)(ZoneWithPrototype.prototype.scheduleTask)) {
         this._unwrap(ZoneWithPrototype.prototype, "scheduleTask");
         this._diag.debug("removing previous patch from method scheduleTask");
       }
-      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.cancelTask)) {
+      if ((0, import_instrumentation2.isWrapped)(ZoneWithPrototype.prototype.cancelTask)) {
         this._unwrap(ZoneWithPrototype.prototype, "cancelTask");
         this._diag.debug("removing previous patch from method cancelTask");
       }
@@ -1051,13 +1427,13 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
       this._zonePatched = false;
       const targets = this._getPatchableEventTargets();
       targets.forEach((target) => {
-        if ((0, import_instrumentation.isWrapped)(target.addEventListener)) {
+        if ((0, import_instrumentation2.isWrapped)(target.addEventListener)) {
           this._unwrap(target, "addEventListener");
           this._diag.debug(
             "removing previous patch from method addEventListener"
           );
         }
-        if ((0, import_instrumentation.isWrapped)(target.removeEventListener)) {
+        if ((0, import_instrumentation2.isWrapped)(target.removeEventListener)) {
           this._unwrap(target, "removeEventListener");
           this._diag.debug(
             "removing previous patch from method removeEventListener"
@@ -1086,22 +1462,22 @@ var UserInteractionInstrumentation = class extends import_instrumentation.Instru
       !!ZoneWithPrototype
     );
     if (ZoneWithPrototype && this._zonePatched) {
-      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.runTask)) {
+      if ((0, import_instrumentation2.isWrapped)(ZoneWithPrototype.prototype.runTask)) {
         this._unwrap(ZoneWithPrototype.prototype, "runTask");
       }
-      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.scheduleTask)) {
+      if ((0, import_instrumentation2.isWrapped)(ZoneWithPrototype.prototype.scheduleTask)) {
         this._unwrap(ZoneWithPrototype.prototype, "scheduleTask");
       }
-      if ((0, import_instrumentation.isWrapped)(ZoneWithPrototype.prototype.cancelTask)) {
+      if ((0, import_instrumentation2.isWrapped)(ZoneWithPrototype.prototype.cancelTask)) {
         this._unwrap(ZoneWithPrototype.prototype, "cancelTask");
       }
     } else {
       const targets = this._getPatchableEventTargets();
       targets.forEach((target) => {
-        if ((0, import_instrumentation.isWrapped)(target.addEventListener)) {
+        if ((0, import_instrumentation2.isWrapped)(target.addEventListener)) {
           this._unwrap(target, "addEventListener");
         }
-        if ((0, import_instrumentation.isWrapped)(target.removeEventListener)) {
+        if ((0, import_instrumentation2.isWrapped)(target.removeEventListener)) {
           this._unwrap(target, "removeEventListener");
         }
       });
@@ -1136,7 +1512,7 @@ __name(getReactRenderStackTrace, "getReactRenderStackTrace");
 var import_api2 = require("@opentelemetry/api");
 var import_api_logs2 = require("@opentelemetry/api-logs");
 var import_sdk_logs = require("@opentelemetry/sdk-logs");
-var import_core2 = require("@opentelemetry/core");
+var import_core3 = require("@opentelemetry/core");
 var import_LoggerProviderSharedState = require("@opentelemetry/sdk-logs/build/src/internal/LoggerProviderSharedState.js");
 var import_resources = require("@opentelemetry/resources");
 var DEFAULT_LOGGER_NAME = "unknown";
@@ -1156,7 +1532,7 @@ var LoggerProvider2 = class {
       mergedConfig.forceFlushTimeoutMillis,
       reconfigureLimits(mergedConfig.logRecordLimits)
     );
-    this._shutdownOnce = new import_core2.BindOnceFuture(this._shutdown, this);
+    this._shutdownOnce = new import_core3.BindOnceFuture(this._shutdown, this);
   }
   /**
    * Get a logger with the configuration of the LoggerProvider.
@@ -1242,12 +1618,12 @@ var MultiLogRecordProcessor = class {
     const timeout = this.forceFlushTimeoutMillis;
     await Promise.all(
       this.processors.map(
-        (processor) => (0, import_core2.callWithTimeout)(processor.forceFlush(), timeout)
+        (processor) => (0, import_core3.callWithTimeout)(processor.forceFlush(), timeout)
       )
     );
   }
-  onEmit(logRecord, context3) {
-    this.processors.forEach((processors) => processors.onEmit(logRecord, context3));
+  onEmit(logRecord, context4) {
+    this.processors.forEach((processors) => processors.onEmit(logRecord, context4));
   }
   async shutdown() {
     await Promise.all(this.processors.map((processor) => processor.shutdown()));
@@ -1257,18 +1633,18 @@ function loadDefaultConfig() {
   return {
     forceFlushTimeoutMillis: 3e4,
     logRecordLimits: {
-      attributeValueLengthLimit: (0, import_core2.getEnv)().OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT,
-      attributeCountLimit: (0, import_core2.getEnv)().OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT
+      attributeValueLengthLimit: (0, import_core3.getEnv)().OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT,
+      attributeCountLimit: (0, import_core3.getEnv)().OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT
     },
     includeTraceContext: true
   };
 }
 __name(loadDefaultConfig, "loadDefaultConfig");
 function reconfigureLimits(logRecordLimits) {
-  const parsedEnvConfig = (0, import_core2.getEnvWithoutDefaults)();
+  const parsedEnvConfig = (0, import_core3.getEnvWithoutDefaults)();
   return {
-    attributeCountLimit: logRecordLimits.attributeCountLimit ?? parsedEnvConfig.OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT ?? parsedEnvConfig.OTEL_ATTRIBUTE_COUNT_LIMIT ?? import_core2.DEFAULT_ATTRIBUTE_COUNT_LIMIT,
-    attributeValueLengthLimit: logRecordLimits.attributeValueLengthLimit ?? parsedEnvConfig.OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT ?? parsedEnvConfig.OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT ?? import_core2.DEFAULT_ATTRIBUTE_VALUE_LENGTH_LIMIT
+    attributeCountLimit: logRecordLimits.attributeCountLimit ?? parsedEnvConfig.OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT ?? parsedEnvConfig.OTEL_ATTRIBUTE_COUNT_LIMIT ?? import_core3.DEFAULT_ATTRIBUTE_COUNT_LIMIT,
+    attributeValueLengthLimit: logRecordLimits.attributeValueLengthLimit ?? parsedEnvConfig.OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT ?? parsedEnvConfig.OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT ?? import_core3.DEFAULT_ATTRIBUTE_VALUE_LENGTH_LIMIT
   };
 }
 __name(reconfigureLimits, "reconfigureLimits");
@@ -1392,8 +1768,9 @@ var defaultMaskText = /* @__PURE__ */ __name((text) => {
 }, "defaultMaskText");
 
 // src/sessions/provider.ts
-var MAX_BUFFER_SIZE = 200;
-var MAX_CHUNK_BYTES = 3 * 1024 * 1024;
+var MAX_BUFFER_SIZE = 100;
+var MAX_CHUNK_BYTES = 1 * 1024 * 1024;
+var MAX_TIME_BETWEEN_CHUNKS = 1e3 * 30;
 var BasicSessionProvider = class {
   static {
     __name(this, "BasicSessionProvider");
@@ -1401,18 +1778,16 @@ var BasicSessionProvider = class {
   eventBuffer;
   activeSession;
   exporter;
-  sampleRate;
   constructor(sessionOptions) {
     this.exporter = sessionOptions.exporter;
-    this.sampleRate = sessionOptions.sampleRate ?? 1;
     const sessionId = sessionOptions.sessionId ?? this.generateSessionId();
     this.activeSession = { id: sessionId };
     this.eventBuffer = {
       count: 0,
       size: 0,
-      events: []
+      events: [],
+      startTime: (/* @__PURE__ */ new Date()).getTime()
     };
-    void this.initializeRecording();
   }
   getActiveSession() {
     return this.activeSession;
@@ -1429,16 +1804,9 @@ var BasicSessionProvider = class {
     this.eventBuffer.count = 0;
     this.eventBuffer.size = 0;
     this.eventBuffer.events = [];
+    this.eventBuffer.startTime = (/* @__PURE__ */ new Date()).getTime();
   }
-  async initializeRecording() {
-    const sessionId = this.activeSession.id;
-    const random = Math.abs(
-      Math.sin(sessionId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0))
-    );
-    const shouldSample = random < this.sampleRate;
-    if (!shouldSample) {
-      return;
-    }
+  async startRecording() {
     try {
       const { record } = await import("rrweb");
       record({
@@ -1465,7 +1833,7 @@ var BasicSessionProvider = class {
     }
   }
   shouldFlushBuffer() {
-    return this.eventBuffer.count > MAX_BUFFER_SIZE || this.eventBuffer.size > MAX_CHUNK_BYTES;
+    return this.eventBuffer.count > MAX_BUFFER_SIZE || this.eventBuffer.size > MAX_CHUNK_BYTES || (/* @__PURE__ */ new Date()).getTime() - this.eventBuffer.startTime > MAX_TIME_BETWEEN_CHUNKS;
   }
   generateSessionId() {
     return `ses_${safeCuid_default()}`;
@@ -1608,6 +1976,12 @@ function instrument(instrumentConfig = {}) {
   const headers = buildHeaders({ iudexApiKey, publicWriteOnlyIudexApiKey, headers: configHeaders });
   const resource = buildResource({ serviceName, instanceId, gitCommit, githubUrl, env });
   config.resource = resource;
+  const propagator = new import_core4.CompositePropagator({
+    propagators: [
+      new import_core4.W3CTraceContextPropagator(),
+      new import_core4.W3CBaggagePropagator()
+    ]
+  });
   const loggerProvider = new LoggerProvider2({ resource });
   const logExporter = new import_exporter_logs_otlp_proto.OTLPLogExporter({ url: url + "/v1/logs", headers });
   const logRecordProcessor = new import_sdk_logs2.SimpleLogRecordProcessor(logExporter);
@@ -1628,7 +2002,11 @@ function instrument(instrumentConfig = {}) {
   }
   config.tracerProvider = tracerProvider;
   tracerProvider.addSpanProcessor(spanProcessor);
-  tracerProvider.register();
+  tracerProvider.register(
+    {
+      propagator
+    }
+  );
   const instrumentations = [];
   if (typeof window !== "undefined" && (settings.instrumentUserInteraction == null || settings.instrumentUserInteraction)) {
     instrumentations.push(new UserInteractionInstrumentation({
@@ -1642,8 +2020,10 @@ function instrument(instrumentConfig = {}) {
     ));
   }
   if (settings.instrumentFetch == null || settings.instrumentFetch) {
-    instrumentations.push(new import_instrumentation_fetch.FetchInstrumentation({
+    instrumentations.push(new FetchInstrumentation({
       ignoreUrls: FETCH_IGNORE_URLS,
+      propagateTraceHeaderCorsUrls: /.*/,
+      // Propagate to all URL
       ...otelConfig["@opentelemetry/instrumentation-fetch"] || {}
     }));
   }
@@ -1656,23 +2036,29 @@ function instrument(instrumentConfig = {}) {
   if (settings.debugMode) {
     console.log("Loaded instrumentations: ", instrumentations);
   }
-  (0, import_instrumentation2.registerInstrumentations)({ instrumentations });
+  (0, import_instrumentation3.registerInstrumentations)({ instrumentations });
   if (settings.instrumentConsole || settings.instrumentConsole == void 0) {
     instrumentConsole();
   }
   patchXmlHttpRequestWithCredentials(url, withCredentials);
-  if (typeof window !== "undefined" && !settings.disableSessionReplay) {
+  if (typeof window !== "undefined") {
     const sessionExporter = new SessionExporter({
       url: url + "/v1/sessions",
       headers,
       interval: 1e3
     });
     const sessionProvider = new BasicSessionProvider({
-      exporter: sessionExporter,
-      sampleRate: settings.sessionReplaySampleRate
+      exporter: sessionExporter
     });
     window.sessionProvider = sessionProvider;
     config.sessionProvider = sessionProvider;
+    const sessionId = sessionProvider.getActiveSession().id;
+    const random = Math.abs(
+      Math.sin(sessionId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0))
+    );
+    if (!settings.disableSessionReplay && random < (settings.sessionReplaySampleRate || 0.1)) {
+      void sessionProvider.startRecording();
+    }
   }
   config.isInstrumented = true;
 }
@@ -1702,8 +2088,8 @@ function buildResource(instrumentConfig) {
     env
   } = { ...defaultInstrumentConfig(), ...instrumentConfig };
   return new import_resources2.Resource(import_lodash2.default.omitBy({
-    [import_semantic_conventions2.SEMRESATTRS_SERVICE_NAME]: serviceName,
-    [import_semantic_conventions2.SEMRESATTRS_SERVICE_INSTANCE_ID]: instanceId,
+    [import_semantic_conventions3.SEMRESATTRS_SERVICE_NAME]: serviceName,
+    [import_semantic_conventions3.SEMRESATTRS_SERVICE_INSTANCE_ID]: instanceId,
     "git.commit": gitCommit,
     "github.url": githubUrl,
     "env": env
@@ -1811,7 +2197,7 @@ __name(buildVercelResource, "buildVercelResource");
 // src/cloudflare-worker.ts
 var cloudflare_worker_exports = {};
 __export(cloudflare_worker_exports, {
-  trace: () => trace3,
+  trace: () => trace4,
   withTracing: () => withTracing2,
   workersConfigSettings: () => workersConfigSettings
 });
@@ -1840,7 +2226,7 @@ function withTracing2(fn, ctx = {}, config2 = {}) {
   return withTracing(fn, ctx);
 }
 __name(withTracing2, "withTracing");
-function trace3(exportedHandler, ctx, config2 = {}) {
+function trace4(exportedHandler, ctx, config2 = {}) {
   return import_lodash4.default.mapValues(exportedHandler, (handler, key) => {
     if (!handler) return;
     return withTracing2(
@@ -1850,7 +2236,7 @@ function trace3(exportedHandler, ctx, config2 = {}) {
     );
   });
 }
-__name(trace3, "trace");
+__name(trace4, "trace");
 
 // src/index.ts
 function trackAttribute(key, value) {

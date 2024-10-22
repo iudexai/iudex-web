@@ -3,7 +3,7 @@ import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { Instrumentation, registerInstrumentations } from '@opentelemetry/instrumentation';
 import { DocumentLoadInstrumentation } from '@opentelemetry/instrumentation-document-load';
-import { FetchInstrumentation } from '@opentelemetry/instrumentation-fetch';
+import { FetchInstrumentation } from './instrumentations/fetch-instrumentation.js';
 import { XMLHttpRequestInstrumentation } from '@opentelemetry/instrumentation-xml-http-request';
 import { Resource } from '@opentelemetry/resources';
 import {
@@ -16,6 +16,7 @@ import {
   SimpleSpanProcessor,
 } from '@opentelemetry/sdk-trace-base';
 import { WebTracerProvider } from '@opentelemetry/sdk-trace-web';
+import { CompositePropagator, W3CBaggagePropagator, W3CTraceContextPropagator } from '@opentelemetry/core';
 import {
   SEMRESATTRS_SERVICE_INSTANCE_ID,
   SEMRESATTRS_SERVICE_NAME,
@@ -127,6 +128,14 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
   const resource = buildResource({ serviceName, instanceId, gitCommit, githubUrl, env });
   config.resource = resource;
 
+  // Set up propagator
+  const propagator = new CompositePropagator({
+    propagators: [
+      new W3CTraceContextPropagator(),
+      new W3CBaggagePropagator(),
+    ],
+  });
+
   // Configure logger
   const loggerProvider = new LoggerProvider({ resource });
   const logExporter = new OTLPLogExporter({ url: url + '/v1/logs', headers });
@@ -161,7 +170,11 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
   // On web, it just causes issues with like, sentry
   // provider.register({ contextManager: new ZoneContextManager() });
   // }
-  tracerProvider.register();
+  tracerProvider.register(
+    {
+      propagator,
+    },
+  );
 
   const instrumentations: Instrumentation[] = [];
 
@@ -187,6 +200,7 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
   if (settings.instrumentFetch == null || settings.instrumentFetch) {
     instrumentations.push(new FetchInstrumentation({
       ignoreUrls: FETCH_IGNORE_URLS,
+      propagateTraceHeaderCorsUrls: /.*/,  // Propagate to all URL
       ...(otelConfig['@opentelemetry/instrumentation-fetch'] || {}),
     }));
   }
@@ -213,7 +227,7 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
   // re-patch on top of otel's patch
   patchXmlHttpRequestWithCredentials(url, withCredentials);
 
-  if (typeof window !== 'undefined' && !settings.disableSessionReplay) {
+  if (typeof window !== 'undefined') {
     const sessionExporter = new SessionExporter({
       url: url + '/v1/sessions',
       headers,
@@ -221,10 +235,18 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
     });
     const sessionProvider = new BasicSessionProvider({
       exporter: sessionExporter,
-      sampleRate: settings.sessionReplaySampleRate,
     });
     (window as any).sessionProvider = sessionProvider;
     config.sessionProvider = sessionProvider;
+
+    // Sample session recordings
+    const sessionId = sessionProvider.getActiveSession().id;
+    const random = Math.abs(
+      Math.sin(sessionId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)),
+    );
+    if (!settings.disableSessionReplay && random < (settings.sessionReplaySampleRate || 0.1)) {
+      void sessionProvider.startRecording();
+    }
   }
 
   // Set global flag

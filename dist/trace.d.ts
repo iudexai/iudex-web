@@ -22,7 +22,7 @@ await fn();
 ```
  *
  */
-export declare function withTracing<T extends (...args: any) => any>(fn: T, ctx?: TraceCtx<T>): T;
+export declare function withTracing<T extends (...args: any) => any>(fn: T, ctx?: TraceCtx): T;
 /**
  * Starts a new trace from a function.
  */

@@ -3,8 +3,9 @@ import { SessionExporter } from './exporter';
 import cuid from './safeCuid.js';
 import { defaultMaskText } from './utils';
 
-const MAX_BUFFER_SIZE = 200;
-const MAX_CHUNK_BYTES = 3 * 1024 * 1024; // 3MB
+const MAX_BUFFER_SIZE = 100;
+const MAX_CHUNK_BYTES = 1 * 1024 * 1024; // 1MB
+const MAX_TIME_BETWEEN_CHUNKS = 1000 * 30; // 30 seconds
 
 interface Session {
   id: string;
@@ -14,10 +15,11 @@ interface Buffer {
   count: number;
   size: number;
   events: eventWithTime[];
+  startTime: number;
 }
 
 export interface SessionProvider {
-  // startRecording(): void;
+  startRecording(): void;
   // stopRecording(): void;
   // attachUser(userId: string): void;
   getActiveSession(): Session;
@@ -27,26 +29,23 @@ export interface SessionProvider {
 export interface SessionOptions {
   sessionId?: string;
   exporter: SessionExporter;
-  sampleRate?: number;
 }
 
 export class BasicSessionProvider implements SessionProvider {
   private readonly eventBuffer: Buffer;
   private readonly activeSession: Session;
   private readonly exporter: SessionExporter;
-  private readonly sampleRate: number;
 
   constructor(sessionOptions: SessionOptions) {
     this.exporter = sessionOptions.exporter;
-    this.sampleRate = sessionOptions.sampleRate ?? 1.0;
     const sessionId = sessionOptions.sessionId ?? this.generateSessionId();
     this.activeSession = { id: sessionId };
     this.eventBuffer = {
       count: 0,
       size: 0,
       events: [],
+      startTime: new Date().getTime(),
     };
-    void this.initializeRecording();
   }
 
   public getActiveSession(): Session {
@@ -68,19 +67,10 @@ export class BasicSessionProvider implements SessionProvider {
     this.eventBuffer.count = 0;
     this.eventBuffer.size = 0;
     this.eventBuffer.events = [];
+    this.eventBuffer.startTime = new Date().getTime();
   }
 
-  private async initializeRecording(): Promise<void> {
-    // Psuedo-randomly sample sessions
-    const sessionId = this.activeSession.id;
-    const random = Math.abs(
-      Math.sin(sessionId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)),
-    );
-    const shouldSample = random < this.sampleRate;
-    if (!shouldSample) {
-      return;
-    }
-
+  public async startRecording(): Promise<void> {
     try {
       const { record } = await import('rrweb');
       record({
@@ -110,7 +100,11 @@ export class BasicSessionProvider implements SessionProvider {
   }
 
   private shouldFlushBuffer(): boolean {
-    return this.eventBuffer.count > MAX_BUFFER_SIZE || this.eventBuffer.size > MAX_CHUNK_BYTES;
+    return (
+      this.eventBuffer.count > MAX_BUFFER_SIZE ||
+      this.eventBuffer.size > MAX_CHUNK_BYTES ||
+      new Date().getTime() - this.eventBuffer.startTime > MAX_TIME_BETWEEN_CHUNKS
+    );
   }
 
   private generateSessionId(): string {

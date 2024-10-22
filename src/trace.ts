@@ -34,7 +34,7 @@ await fn();
  */
 export function withTracing<T extends (...args: any) => any>(
   fn: T,
-  ctx: TraceCtx<T> = {},
+  ctx: TraceCtx = {},
 ): T {
   return function (...args: Parameters<T>): ReturnType<T> {
     const { name, trackArgs = true, maxArgKeys, maxArgDepth, attributes, setSpan, setArgs } = ctx;
@@ -55,19 +55,25 @@ export function withTracing<T extends (...args: any) => any>(
         }
         if (trackArgs && !setArgs) {
           if (args.length === 1) {
-            const flatObj = flattenObject(args[0], '', {}, new Set(), maxArgKeys, maxArgDepth);
-            flatObj && Object.entries(flatObj).forEach(([key, value]) => {
-              span.setAttribute(key, value);
-            });
+            if (args[0] != null && typeof args[0] === 'object') {
+              const flatObj = flattenObject(args[0], '', {}, new Set(), maxArgKeys, maxArgDepth);
+              flatObj && Object.entries(flatObj).forEach(([key, value]) => {
+                span.setAttribute(key, value);
+              });
+            } else if (args[0] == null) {
+              span.setAttribute('args.0', `<${args[0]}>`);
+            } else {
+              span.setAttribute('args.0', args[0]);
+            }
           } else if (args.length > 1) {
             const flatObjs = flattenObject(args, '', {}, new Set(), maxArgKeys, maxArgDepth);
             flatObjs && Object.entries(flatObjs).forEach(([key, value]) => {
-              span.setAttribute(key, value);
+              span.setAttribute(`args.${key}`, value);
             });
           }
         }
         if (setArgs) {
-          setArgs(span, args) ;
+          setArgs(span, args);
         }
         // Run the function
         const ret = fn(...args);
@@ -77,10 +83,8 @@ export function withTracing<T extends (...args: any) => any>(
           // If theres a setSpan handler, use that instead
           if (setSpan) {
             // Wait for ret to resolve, then call setSpan
-            return ret.then((res: any) => {
-              setSpan(span, ret);
-              return res;
-            });
+            setSpan(span, ret);
+            return ret;
           }
 
           return (ret as Promise<ReturnType<T>>)
@@ -110,8 +114,11 @@ export function withTracing<T extends (...args: any) => any>(
         span.end();
         return ret;
       } catch (err) {
-        span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) });
+        span.setStatus({ code: SpanStatusCode.ERROR, message: (err as Error).message });
         span.recordException(err as Error);
+        span.setAttribute('exception.message', (err as Error).message);
+        (err as Error).stack
+          && span.setAttribute('exception.stacktrace', (err as Error).stack || '');
         emitOtelLog({ level: 'ERROR', body: err });
         span.end();
         throw err;
