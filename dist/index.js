@@ -2056,7 +2056,7 @@ function instrument(instrumentConfig = {}) {
     const random = Math.abs(
       Math.sin(sessionId.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0))
     );
-    if (!settings.disableSessionReplay && random < (settings.sessionReplaySampleRate || 0.1)) {
+    if (!settings.disableSessionReplay && random < (settings.sessionReplaySampleRate || 1)) {
       void sessionProvider.startRecording();
     }
   }
