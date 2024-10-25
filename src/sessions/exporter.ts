@@ -1,7 +1,10 @@
+import { Attributes } from '@opentelemetry/api';
 import { eventWithTime } from '@rrweb/types';
 
 interface SessionChunk {
   sessionId: string;
+  sessionAttributes: Attributes;
+  resourceAttributes: Attributes;
   events: eventWithTime[];
 }
 

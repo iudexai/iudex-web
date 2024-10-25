@@ -1777,11 +1777,13 @@ var BasicSessionProvider = class {
   }
   eventBuffer;
   activeSession;
+  resource;
   exporter;
   constructor(sessionOptions) {
     this.exporter = sessionOptions.exporter;
     const sessionId = sessionOptions.sessionId ?? this.generateSessionId();
-    this.activeSession = { id: sessionId };
+    this.activeSession = { id: sessionId, attributes: {} };
+    this.resource = sessionOptions.resource;
     this.eventBuffer = {
       count: 0,
       size: 0,
@@ -1798,6 +1800,8 @@ var BasicSessionProvider = class {
     }
     const chunk = {
       sessionId: this.activeSession.id,
+      sessionAttributes: { ...this.activeSession.attributes },
+      resourceAttributes: { ...this.resource.attributes },
       events: [...this.eventBuffer.events]
     };
     this.exporter.addToQueue(chunk);
@@ -1823,6 +1827,9 @@ var BasicSessionProvider = class {
     } catch (error) {
       console.info("Failed to initialize recording:", error);
     }
+  }
+  addSessionAttribute(key, value) {
+    this.activeSession.attributes[key] = value;
   }
   handleEvent(event) {
     this.eventBuffer.events.push(event);
@@ -2048,7 +2055,8 @@ function instrument(instrumentConfig = {}) {
       interval: 1e3
     });
     const sessionProvider = new BasicSessionProvider({
-      exporter: sessionExporter
+      exporter: sessionExporter,
+      resource
     });
     window.sessionProvider = sessionProvider;
     config.sessionProvider = sessionProvider;
@@ -2262,7 +2270,7 @@ function setName(name) {
 }
 __name(setName, "setName");
 function trackGlobalAttribute(key, value) {
-  const { loggerProvider, tracerProvider } = config;
+  const { loggerProvider, tracerProvider, sessionProvider } = config;
   const loggerAttrs = loggerProvider?._sharedState.resource?._attributes;
   if (loggerAttrs) {
     loggerAttrs[key] = value;
@@ -2271,6 +2279,7 @@ function trackGlobalAttribute(key, value) {
   if (tracerAttrs) {
     tracerAttrs[key] = value;
   }
+  sessionProvider?.addSessionAttribute(key, value);
 }
 __name(trackGlobalAttribute, "trackGlobalAttribute");
 // Annotate the CommonJS export names for ESM import in node:

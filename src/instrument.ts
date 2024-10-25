@@ -235,6 +235,7 @@ export function instrument(instrumentConfig: InstrumentConfig = {}) {
     });
     const sessionProvider = new BasicSessionProvider({
       exporter: sessionExporter,
+      resource,
     });
     (window as any).sessionProvider = sessionProvider;
     config.sessionProvider = sessionProvider;

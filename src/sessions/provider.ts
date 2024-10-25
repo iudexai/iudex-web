@@ -2,6 +2,7 @@ import { eventWithTime } from '@rrweb/types';
 import { SessionExporter } from './exporter';
 import cuid from './safeCuid.js';
 import { defaultMaskText } from './utils';
+import { Resource } from '@opentelemetry/resources';
 
 const MAX_BUFFER_SIZE = 100;
 const MAX_CHUNK_BYTES = 1 * 1024 * 1024; // 1MB
@@ -9,6 +10,7 @@ const MAX_TIME_BETWEEN_CHUNKS = 1000 * 30; // 30 seconds
 
 interface Session {
   id: string;
+  attributes: Record<string, string>;
 }
 
 interface Buffer {
@@ -21,7 +23,7 @@ interface Buffer {
 export interface SessionProvider {
   startRecording(): void;
   // stopRecording(): void;
-  // attachUser(userId: string): void;
+  addSessionAttribute(key: string, value: string): void;
   getActiveSession(): Session;
   flushBuffer(): void;
 }
@@ -29,17 +31,20 @@ export interface SessionProvider {
 export interface SessionOptions {
   sessionId?: string;
   exporter: SessionExporter;
+  resource: Resource;
 }
 
 export class BasicSessionProvider implements SessionProvider {
   private readonly eventBuffer: Buffer;
   private readonly activeSession: Session;
+  private readonly resource: Resource;
   private readonly exporter: SessionExporter;
 
   constructor(sessionOptions: SessionOptions) {
     this.exporter = sessionOptions.exporter;
     const sessionId = sessionOptions.sessionId ?? this.generateSessionId();
-    this.activeSession = { id: sessionId };
+    this.activeSession = { id: sessionId, attributes: {} };
+    this.resource = sessionOptions.resource;
     this.eventBuffer = {
       count: 0,
       size: 0,
@@ -59,6 +64,8 @@ export class BasicSessionProvider implements SessionProvider {
 
     const chunk = {
       sessionId: this.activeSession.id,
+      sessionAttributes: { ...this.activeSession.attributes },
+      resourceAttributes: { ...this.resource.attributes },
       events: [...this.eventBuffer.events],
     };
     this.exporter.addToQueue(chunk);
@@ -87,6 +94,10 @@ export class BasicSessionProvider implements SessionProvider {
     } catch (error) {
       console.info('Failed to initialize recording:', error);
     }
+  }
+
+  public addSessionAttribute(key: string, value: string): void {
+    this.activeSession.attributes[key] = value;
   }
 
   private handleEvent(event: eventWithTime): void {

@@ -51,7 +51,7 @@ export function setName(name: string) {
  * Adds attribute to all logs and spans
  */
 export function trackGlobalAttribute(key: string, value: any) {
-  const { loggerProvider, tracerProvider } = config;
+  const { loggerProvider, tracerProvider, sessionProvider } = config;
 
   // Hacky, no way through otel to do this rn
   const loggerAttrs = (loggerProvider as any)?._sharedState.resource?._attributes;
@@ -63,4 +63,6 @@ export function trackGlobalAttribute(key: string, value: any) {
   if (tracerAttrs) {
     tracerAttrs[key] = value;
   }
+
+  sessionProvider?.addSessionAttribute(key, value);
 }
